@@ -1,0 +1,135 @@
+---
+title: "cocoa_main_analysis"
+output: pdf_document
+date: "`r Sys.Date()`"
+---
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+```
+
+```{r}
+# load data
+prices_data <- read_csv("daily_prices_ICCO.csv", show_col_types=FALSE)
+ghana_data <- read_csv("ghana_data.csv", show_col_types=FALSE)
+```
+## EDA
+```{r}
+# EDA section
+
+str(prices_data)
+str(ghana_data)
+
+# Basic summary stats
+summary(prices_data)
+summary(ghana_data)
+
+
+```
+```{r}
+# convert date columns to Date class
+prices_data <- prices_data %>%
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y"))
+
+ghana_data <- ghana_data %>%
+  mutate(DATE = as.Date(DATE, format = "%d/%m/%Y"))
+
+# consistent naming
+ghana_data <- ghana_data %>%
+  rename(Date = DATE)
+
+# change price column name
+prices_data <- prices_data %>%
+  rename(Price = `ICCO daily price (US$/tonne)`)
+```
+
+
+
+```{r}
+ggplot(prices_data, aes(x = Date, y = Price)) +
+  geom_line() +
+  labs(title = "Daily Cocoa Futures Prices",
+       x = "Date", 
+       y = "Price")
+
+summary(prices_data$Price)
+prices_data %>%
+  mutate(Year = lubridate::year(Date)) %>%
+  group_by(Year) %>%
+  summarize(AvgPrice = mean(Price, na.rm = TRUE)) %>%
+  arrange(Year)
+prices_data %>%
+  mutate(Month = lubridate::month(Date, label = TRUE)) %>%
+  ggplot(aes(x = Month, y = Price)) +
+    geom_boxplot() +
+    labs(title = "Distribution of Cocoa Prices by Month")
+
+```
+
+
+```{r}
+ggplot(ghana_data, aes(x = Date, y = TAVG)) +
+  geom_line() +
+  labs(title = "Daily Average Temperature in Ghana",
+       x = "Date",
+       y = "Temperature (°C)")
+
+```
+
+
+
+```{r}
+# Let's assume 'prices_data' has columns Date (class Date) and Price (numeric).
+prices_data <- prices_data %>%
+  arrange(Date)
+
+# Identify the start year and day of year:
+start_year <- year(min(prices_data$Date))
+start_doy  <- yday(min(prices_data$Date))  # day of year
+end_year   <- year(max(prices_data$Date))
+end_doy    <- yday(max(prices_data$Date))
+
+# Convert the Price vector to a daily ts object with frequency=365:
+# instead, I want to do it by months
+prices_ts <- ts(
+  data      = prices_data$Price,
+  start     = c(start_year, start_doy),
+  frequency = 12
+  
+)
+
+
+ggtsdisplay(prices_ts, main = "Time Series, ACF, and PACF for Cocoa Prices")
+
+```
+
+
+```{r}
+# Fit ARIMA model
+fit_arima <- auto.arima(prices_ts, 
+                        seasonal = TRUE, 
+                        stepwise = FALSE, 
+                        approximation = FALSE)
+
+summary(fit_arima)
+
+
+```
+
+
+```{r}
+# Forecast next 30 days, for example
+fcast <- forecast(fit_arima, h = 30)
+
+# Print forecast values
+fcast
+
+# Plot forecast with prediction intervals
+autoplot(fcast) +
+  ggtitle("Cocoa Price Forecast (ARIMA) - Next 30 Days")
+
+
+```
