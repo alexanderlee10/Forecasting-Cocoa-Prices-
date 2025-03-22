@@ -1,0 +1,155 @@
+---
+title: "cleaning_data"
+output: pdf_document
+date: "`r Sys.Date()`"
+---
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(lubridate)
+```
+
+```{r} 
+# load data
+prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=FALSE)
+ghana_data <- read_csv("Ghana_data.csv", show_col_types=FALSE)
+```
+
+```{r}
+clean_ghana <- ghana_data %>%
+  mutate(DATE = ymd(DATE)) %>%
+  distinct(DATE, .keep_all = TRUE) %>%
+  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
+  arrange(DATE)
+clean_ghana
+
+```
+```{r}
+total_duplicates <- sum(duplicated(clean_ghana))
+total_duplicates
+```
+```{r}
+final_ghana <- clean_ghana %>%
+  select(DATE, PRCP, TAVG)
+
+final_ghana
+```
+
+
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- prices_data %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+# View the results
+print(duplicate_dates)
+
+```
+
+
+```{r}
+data <- prices_data %>%
+  mutate(Date = ymd(Date)) %>%
+  arrange(Date) %>%
+  mutate(
+    next_price = lead(Price),
+    next_date = lead(Date),
+    days_diff = as.numeric(next_date - Date),
+    price_diff = next_price - Price
+  ) %>%
+  filter(
+    days_diff == 1,          # Strictly consecutive days
+    price_diff > 100,        # Price increase > $100
+    !is.na(price_diff)       # Remove NA from the last row
+  ) %>%
+  select(Date, Price, next_date, next_price, price_diff)
+
+# Print results
+if (nrow(data) == 0) {
+  message("No rows met the criteria.")
+} else {
+  print(data)
+}
+
+```
+
+
+```{r}
+clean_price <- prices_data %>%
+  distinct() %>%
+  filter(!(Date == "30/01/2024" & `ICCO daily price (US$/tonne)` == 10676.42)) %>%
+  filter(!(Date == "31/01/2024" & `ICCO daily price (US$/tonne)` == 10888.05))
+```
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- clean_price %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+print(duplicate_dates)
+
+```
+
+
+```{r}
+final_price <- clean_price %>%
+  select(Date, `ICCO daily price (US$/tonne)`)
+
+```
+```{r}
+final_price <- final_price %>%
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y"))
+
+# Ensure DATE column is already Date type (if not, convert)
+final_ghana <- final_ghana %>%
+  mutate(DATE = as.Date(DATE))
+
+```
+
+
+
+```{r}
+combined_data <- final_price %>%
+  inner_join(final_ghana, by = c("Date" = "DATE"))
+
+combined_data
+```
+```{r}
+sorted_data <- combined_data %>%
+  mutate(Date = ymd(Date)) %>%       # Convert to proper date format
+  arrange(Date) %>%                 # Sort by ascending date
+  select(Date, everything())        # Ensure date column comes first
+
+# View sorted data
+sorted_data
+
+```
+```{r}
+sorted_data <- sorted_data %>%
+  rename(
+    date = Date,
+    daily_price = `ICCO daily price (US$/tonne)`,  
+    precipitation = PRCP,                               
+    avg_temperature = TAVG                             
+  )
+
+```
+```{r}
+sorted_data
+
+
+```
