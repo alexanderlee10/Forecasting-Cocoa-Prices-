@@ -10,6 +10,8 @@ library(tidyverse)
 library(ggplot2)
 library(forecast)
 library(lubridate)
+library(dplyr)
+library(astsa)
 ```
 
 ```{r} 
@@ -25,7 +27,6 @@ clean_ghana <- ghana_data %>%
   filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
   arrange(DATE)
 clean_ghana
-
 ```
 ```{r}
 total_duplicates <- sum(duplicated(clean_ghana))
@@ -49,6 +50,12 @@ duplicate_dates <- prices_data %>%
   filter(n() > 1) %>%       # Keep dates that appear more than once
   arrange(Date) %>%         # Sort by date for clarity
   ungroup()
+
+# Modify the column name from ICCO daily price (US$/tonne) to Price
+prices_data <- rename(
+  prices_data, 
+  Price=`ICCO daily price (US$/tonne)`
+)
 
 # View the results
 print(duplicate_dates)
@@ -86,8 +93,8 @@ if (nrow(data) == 0) {
 ```{r}
 clean_price <- prices_data %>%
   distinct() %>%
-  filter(!(Date == "30/01/2024" & `ICCO daily price (US$/tonne)` == 10676.42)) %>%
-  filter(!(Date == "31/01/2024" & `ICCO daily price (US$/tonne)` == 10888.05))
+  filter(!(Date == "30/01/2024" & `Price` == 10676.42)) %>%
+  filter(!(Date == "31/01/2024" & `Price` == 10888.05))
 ```
 
 ```{r}
@@ -107,7 +114,7 @@ print(duplicate_dates)
 
 ```{r}
 final_price <- clean_price %>%
-  select(Date, `ICCO daily price (US$/tonne)`)
+  select(Date, `Price`)
 
 ```
 ```{r}
@@ -142,14 +149,245 @@ sorted_data
 sorted_data <- sorted_data %>%
   rename(
     date = Date,
-    daily_price = `ICCO daily price (US$/tonne)`,  
+    daily_price = `Price`,  
     precipitation = PRCP,                               
     avg_temperature = TAVG                             
   )
 
 ```
+
 ```{r}
 sorted_data
-
-
 ```
+```{r}
+# Transform daily_price into ts object
+dp_ts <- ts(sorted_data$daily_price, frequency = 12)
+plot(sorted_data$date, sorted_data$daily_price)
+
+# Plot ACF and PACF
+acf(dp_ts, main = "ACF of daily_price", lag.max = 120)
+pacf(dp_ts, main = "PACF of daily_price", lag.max = 120)
+```
+```{r}
+# Take the first difference
+diff_dp_ts <- diff(dp_ts)
+
+# Plot ACF and PACF
+acf(diff_dp_ts, 
+    main = "ACF pf daily_price with one differencing", 
+    lag.max = 120)
+pacf(diff_dp_ts, 
+     main = "PACF pf daily_price with one differencing", 
+     lag.max = 120)
+```
+```{r}
+# Take the second difference
+diff_dp_ts2 <- diff(diff_dp_ts)
+
+# Plot ACF and PACF
+acf(diff_dp_ts2, 
+    main = "ACF pf daily_price with two differencing", 
+    lag.max = 120)
+pacf(diff_dp_ts2, 
+     main = "PACF pf daily_price with two differencing", 
+     lag.max = 120)
+```
+```{r}
+fit_021 <- sarima(dp_ts, 0, 2, 1)
+fit_021
+```
+
+```{r}
+fit_120 <- sarima(dp_ts, 1, 2, 0)
+fit_120
+```
+```{r}
+fit_121 <- sarima(dp_ts, 1, 2, 1)
+fit_121
+```
+
+```{r}
+# Implement log transform (should I do this...?)
+dp_ts_log <- log(dp_ts)
+
+fit_121_log <- sarima(dp_ts_log, 1, 2, 1)
+fit_121_log
+```
+
+```{r}
+mvspec(dp_ts,
+       spans = c(3, 3),
+       taper = 0.1, 
+       log = "no",     
+       main = "Spectral Analysis with mvspec"
+) 
+```
+
+```{r}
+# Downloading S&P GSCI. The Purpsoe of downloading S&P GSCI is to understand the trend of how investors look at the commodities. While it is true that there are tons of other stuff in S&P, I think we should not use Cocoa index directly as causation is not very sure...
+
+# read S&P GSCI
+library(readr)
+sp_gsci <- read.csv2(
+  "S&P.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+clean_sp <- sp_gsci %>%
+  rename(
+    date = "Issue.Date",
+    gsci      = "S.P.GSCI"
+  ) %>%
+  mutate(date = mdy(date)) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  arrange(date)
+```
+
+```{r}
+summary(clean_sp)
+```
+
+```{r}
+filtered_sp <- clean_sp %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+filtered_sorted <- sorted_data %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+# 1) Plot the first series (red) with normal axes
+plot(
+  x    = filtered_sp$date,
+  y    = filtered_sp$gsci,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "S&P GSCI",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 2) Add the second series (blue) on top, with a new y-axis
+par(new = TRUE)  # tell R we will draw on top of the existing plot
+plot(
+  x    = filtered_sorted$date,
+  y    = filtered_sorted$daily_price,
+  type = "l",
+  col  = "blue",
+  axes = FALSE,         # don't draw a new x or y axis
+  xlab = "",            # don't overwrite existing x label
+  ylab = "",            # or y label
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 3) Draw a new axis on the right side, and label it appropriately
+axis(side = 4)                # y-axis on the right
+mtext("Daily Price", side = 4, line = 3)  # label the new axis
+```
+
+```{r}
+inflation <- read.csv2(
+  "inflation.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE,
+)
+
+inflation <- inflation %>%
+  separate(
+    col  = "Date.Inflation.....",  
+    into = c("Date", "Inflation"),  
+    sep  = ","                      
+  )
+```
+
+```{r}
+clean_inflation <- inflation %>%
+  rename(
+    date = "Date",
+    inflation = "Inflation"
+  ) %>%
+  mutate(date = ymd(date)) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  arrange(date)
+
+filtered_inflation <- clean_inflation %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+summary(filtered_inflation)
+```
+
+```{r}
+# 1) Plot the first series (red) with normal axes
+plot(
+  x    = filtered_inflation$date, # if necessary %m+% months(16),
+  y    = filtered_inflation$inflation,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "Inflation",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 2) Add the second series (blue) on top, with a new y-axis
+par(new = TRUE)  # tell R we will draw on top of the existing plot
+plot(
+  x    = filtered_sorted$date,
+  y    = filtered_sorted$daily_price,
+  type = "l",
+  col  = "blue",
+  axes = FALSE,         # don't draw a new x or y axis
+  xlab = "",            # don't overwrite existing x label
+  ylab = "",            # or y label
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 3) Draw a new axis on the right side, and label it appropriately
+axis(side = 4)                # y-axis on the right
+mtext("Daily Price", side = 4, line = 3)  # label the new axis
+```
+
+```{r}
+plot(
+  x    = filtered_inflation$date,
+  y    = filtered_inflation$inflation,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "Inflation",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+par(new = TRUE)
+plot(
+  x    = filtered_sp$date, # if necessary %m+% months(8)
+  y    = filtered_sp$gsci,
+  type = "l",
+  col  = "blue",
+  xlab = "",
+  ylab = "",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28")),
+  axes = FALSE   
+)
+
+axis(side = 4)
+mtext("S&P GSCI", side = 4, line = 3)
+```
+
+
+
+
+
+
+
+
+
