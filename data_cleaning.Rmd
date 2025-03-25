@@ -160,6 +160,42 @@ sorted_data <- sorted_data %>%
 sorted_data
 ```
 ```{r}
+# make new data that converts the sorted_data$daily_price into monthly data by taking the average of the month
+monthly_data <- sorted_data %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(
+    daily_price = mean(daily_price),
+    precipitation = mean(precipitation),
+    avg_temperature = mean(avg_temperature)
+  ) %>%
+  arrange(year_month)
+
+
+prices <- ts(monthly_data$daily_price, frequency = 12)
+plot(prices)
+# months since 1994-10
+ets_aaa <- ets(prices, model = "AAA")
+plot(ets_aaa)
+```
+From this we know that there exists seasonality, indicating SARIMA is the appropriate approach.
+```{r}
+# 
+acf(prices)
+pacf(prices)
+acf(diff(prices))
+pacf(diff(prices))
+```
+From first differencing, it suggests that p,d,q = 1,1,1 is the appropriate model.
+
+```{r}
+auto.arima(prices)
+```
+
+
+# PAST WORK
+
+```{r}
 # Transform daily_price into ts object
 dp_ts <- ts(sorted_data$daily_price, frequency = 12)
 plot(sorted_data$date, sorted_data$daily_price)
@@ -168,6 +204,7 @@ plot(sorted_data$date, sorted_data$daily_price)
 acf(dp_ts, main = "ACF of daily_price", lag.max = 120)
 pacf(dp_ts, main = "PACF of daily_price", lag.max = 120)
 ```
+
 ```{r}
 # Take the first difference
 diff_dp_ts <- diff(dp_ts)
@@ -180,6 +217,8 @@ pacf(diff_dp_ts,
      main = "PACF pf daily_price with one differencing", 
      lag.max = 120)
 ```
+
+
 ```{r}
 # Take the second difference
 diff_dp_ts2 <- diff(diff_dp_ts)
@@ -192,6 +231,8 @@ pacf(diff_dp_ts2,
      main = "PACF pf daily_price with two differencing", 
      lag.max = 120)
 ```
+
+
 ```{r}
 fit_021 <- sarima(dp_ts, 0, 2, 1)
 fit_021
@@ -214,7 +255,12 @@ fit_121_log <- sarima(dp_ts_log, 1, 2, 1)
 fit_121_log
 ```
 
+## Until this point, we just did some ts analysis, ACF, PACF to infer some MA, AR dependency. and potential GARCH model stuff.
+
+
 ```{r}
+
+# ?????????? can we make this somewhat transferable to A2 material
 mvspec(dp_ts,
        spans = c(3, 3),
        taper = 0.1, 
@@ -222,6 +268,10 @@ mvspec(dp_ts,
        main = "Spectral Analysis with mvspec"
 ) 
 ```
+
+## MVSPEC: whats the purpose of this? What kind of information should we get out of spectral analysis?
+
+
 
 ```{r}
 # Downloading S&P GSCI. The Purpsoe of downloading S&P GSCI is to understand the trend of how investors look at the commodities. While it is true that there are tons of other stuff in S&P, I think we should not use Cocoa index directly as causation is not very sure...
