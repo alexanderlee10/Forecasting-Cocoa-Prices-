@@ -270,21 +270,29 @@ Since the CI , [ 3.259353 , 479.6665 ] is above 0 that implies there is cyclical
 ##
 
 ```{r}
-# Add a Year column (rows 1-30 represent years)
-log_prices_long <- log_prices %>%
-  mutate(Year = 1:n()) %>%  # Assign year numbers 30
-  pivot_longer(
-    cols = Jan:Dec,
-    names_to = "Month",
-    values_to = "Log_Price"
-  )
-
-# Create a sequential time variable
-log_prices_long <- log_prices_long %>%
-  mutate(
-    Time = (Year - 1) * 12 + match(Month, month.abb)  # Time = 1, 2, ..., 300 (25 years * 12 months)
-  )
+acf(log_prices)
+pacf(log_prices)
 ```
+```{r}
+acf(diff(log_prices))
+pacf(diff(log_prices))
+```
+
+```{r}
+acf_lag_max <- 20  # Adjust this value as needed
+
+# ACF Plot with integer lags
+acf(diff(log_prices), lag.max = acf_lag_max, xaxt = "n", main = "ACF of Differenced Log Prices")
+axis(1, at = seq(0, acf_lag_max, by = 1), labels = seq(0, acf_lag_max, by = 1))
+
+# PACF Plot with integer lags
+pacf(diff(log_prices), lag.max = acf_lag_max, xaxt = "n", main = "PACF of Differenced Log Prices")
+axis(1, at = seq(0, acf_lag_max, by = 1), labels = seq(0, acf_lag_max, by = 1))
+```
+
+
+
+
 
 
 
@@ -319,12 +327,29 @@ If not, there is some dependency thats not being captured by multiplicative ARMI
 
 
 ```{r}
-auto.arima(prices)
+auto.arima(log(prices))
+```
+```{r}
+fit011 <- sarima(log_prices, 0, 1, 1)
+  
+  
+```
+```{r}
+fit111 <- sarima(log_prices, 1, 1, 1)
+  
+  
+```
+```{r}
+fit112 <- sarima(log_prices, 0, 1, 0)
+
+
+
 ```
 
 
-
-
-
-
-
+```{r}
+fit111 <- sarima(log_prices, 0, 1, 0)
+  
+  
+```
+We can look at the PACF and the ACF to see the cutoff is in between 0-1 however ARIMA models must be integer values which suggest that the optimal model will have AR(1) or AR(0) and MA(1) or MA(0). We also know that we need to difference the data. We can make a ARIMA(0,1,0), ARIMA(0,1,1), and ARIMA(1,1,1). After looking at the other models we see that ARIMA(0,1,1) has the lowest AIC of -2.699233 and  must be the best model.
