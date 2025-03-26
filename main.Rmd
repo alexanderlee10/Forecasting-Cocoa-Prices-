@@ -1,0 +1,330 @@
+---
+title: "cleaning_data"
+output: pdf_document
+date: "`r Sys.Date()`"
+---
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(lubridate)
+library(dplyr)
+library(astsa)
+```
+
+```{r} 
+# load data
+prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=FALSE)
+ghana_data <- read_csv("Ghana_data.csv", show_col_types=FALSE)
+```
+
+```{r}
+clean_ghana <- ghana_data %>%
+  mutate(DATE = ymd(DATE)) %>%
+  distinct(DATE, .keep_all = TRUE) %>%
+  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
+  arrange(DATE)
+clean_ghana
+```
+```{r}
+total_duplicates <- sum(duplicated(clean_ghana))
+total_duplicates
+```
+```{r}
+final_ghana <- clean_ghana %>%
+  select(DATE, PRCP, TAVG)
+
+final_ghana
+```
+
+
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- prices_data %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+# Modify the column name from ICCO daily price (US$/tonne) to Price
+prices_data <- rename(
+  prices_data, 
+  Price=`ICCO daily price (US$/tonne)`
+)
+
+# View the results
+print(duplicate_dates)
+
+```
+
+
+```{r}
+data <- prices_data %>%
+  mutate(Date = ymd(Date)) %>%
+  arrange(Date) %>%
+  mutate(
+    next_price = lead(Price),
+    next_date = lead(Date),
+    days_diff = as.numeric(next_date - Date),
+    price_diff = next_price - Price
+  ) %>%
+  filter(
+    days_diff == 1,          # Strictly consecutive days
+    price_diff > 100,        # Price increase > $100
+    !is.na(price_diff)       # Remove NA from the last row
+  ) %>%
+  select(Date, Price, next_date, next_price, price_diff)
+
+# Print results
+if (nrow(data) == 0) {
+  message("No rows met the criteria.")
+} else {
+  print(data)
+}
+
+```
+
+
+```{r}
+clean_price <- prices_data %>%
+  distinct() %>%
+  filter(!(Date == "30/01/2024" & `Price` == 10676.42)) %>%
+  filter(!(Date == "31/01/2024" & `Price` == 10888.05))
+```
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- clean_price %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+print(duplicate_dates)
+
+```
+
+
+```{r}
+final_price <- clean_price %>%
+  select(Date, `Price`)
+
+```
+```{r}
+final_price <- final_price %>%
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y"))
+
+# Ensure DATE column is already Date type (if not, convert)
+final_ghana <- final_ghana %>%
+  mutate(DATE = as.Date(DATE))
+
+```
+
+
+
+```{r}
+combined_data <- final_price %>%
+  inner_join(final_ghana, by = c("Date" = "DATE"))
+
+combined_data
+```
+```{r}
+sorted_data <- combined_data %>%
+  mutate(Date = ymd(Date)) %>%       # Convert to proper date format
+  arrange(Date) %>%                 # Sort by ascending date
+  select(Date, everything())        # Ensure date column comes first
+
+# View sorted data
+sorted_data
+
+```
+```{r}
+sorted_data <- sorted_data %>%
+  rename(
+    date = Date,
+    daily_price = `Price`,  
+    precipitation = PRCP,                               
+    avg_temperature = TAVG                             
+  )
+
+```
+
+```{r}
+sorted_data
+```
+```{r}
+# make new data that converts the sorted_data$daily_price into monthly data by taking the average of the month
+monthly_data <- sorted_data %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(
+    daily_price = mean(daily_price),
+    precipitation = mean(precipitation),
+    avg_temperature = mean(avg_temperature)
+  ) %>%
+  arrange(year_month)
+
+
+prices <- ts(monthly_data$daily_price, frequency = 12)
+plot(prices)
+# months since 1994-10
+ets_aaa <- ets(prices, model = "AAA")
+plot(ets_aaa)
+```
+
+
+
+
+```{r}
+log_prices = log(prices)
+plot(log(prices)) # need to find better ways for homosckeasticity clearly, logging isnt enough
+optimal_model = auto.arima(log_prices)
+optimal_model
+
+# from ACF and PACF plot, we suggest potential models
+# Then Use AIC to determine the model 
+# but we know the aswer is auto.arima()
+
+```
+
+To check for homoscedasticity, we want to check if the variance of the residuals is constant over time
+# Checking vaar
+
+```{r}
+
+# Checking for Homoskedcaocty (constant variance) with price data by splitting 2 halfs of the data by checking the variance 
+x <- prices 
+# Determine the number of observations and split the data in half
+n <- length(x)
+half <- floor(n / 2)
+# Compute the sample variances for the first half and the second half
+var_first_half <- var(x[1:half])
+var_second_half <- var(x[(half + 1):n])
+cat("Variance first half of price:", var_first_half, "\n")
+cat("Variance second half of price:", var_second_half, "\n")
+```
+```{r}
+
+# Checking for Homoskedcaocty (constant variance) with log_price data by splitting 2 halfs of the data by checking the variance 
+y <- log_prices
+# Determine the number of observations and split the data in half
+n <- length(y)
+half <- floor(n / 2)
+# Compute the sample variances for the first half and the second half
+var_first_half <- var(y[1:half])
+var_second_half <- var(y[(half + 1):n])
+cat("Variance first half of log_price:", var_first_half, "\n")
+cat("Variance second half of log_price:", var_second_half, "\n")
+```
+
+Since the variance of the log_prices is around the same, it suggests that homoskedasticity holds.
+
+## 
+We logged to stabilize our variance, although it is still not enough, we will work with this, and if we need to, we will use ARCH or GARCH models to account for this.
+
+
+## Spectral Analysis
+```{r}
+# Plotting the log_prices periodogram
+spec_u_standarized <- mvspec(log_prices, demean = TRUE)
+
+```
+
+
+```{r}
+# Find the predomiant frequency and the peak value
+peak_index_n <- which.max(spec_u_standarized$spec)
+omega_u_n <- spec_u_standarized$freq[peak_index_n]
+peak_value_n <- spec_u_standarized$spec[peak_index_n]
+cat("Predominant frequency (standardized) =", omega_u_n, "\n")
+cat("Spectral peak (standardized) at that frequency =", peak_value_n, "\n")
+```
+This is about right since we have the 1/.0027777 =~360 months which is about 30 years, which is the period of the data we have.
+Spectral peak (standardized) at that frequency = 12.03774.
+
+
+```{r}
+# Find the 95% confidence interval for the peak value
+alpha <- 0.05
+nu_n <- spec_u_standarized$df
+lower_factor_n <- nu_n / qchisq(1 - alpha/2, df = nu_n)
+upper_factor_n <- nu_n / qchisq(alpha/2, df = nu_n)
+lower_n <- peak_value_n * lower_factor_n
+upper_n <- peak_value_n * upper_factor_n
+cat("95% CI for f_u(omega_u) with standardization:",
+"[", lower_n, ",", upper_n, "]\n")
+
+```
+Since the CI , [ 3.259353 , 479.6665 ] is above 0 that implies there is cyclical pattern ...... 
+
+
+
+
+##
+
+```{r}
+# Add a Year column (rows 1-30 represent years)
+log_prices_long <- log_prices %>%
+  mutate(Year = 1:n()) %>%  # Assign year numbers 30
+  pivot_longer(
+    cols = Jan:Dec,
+    names_to = "Month",
+    values_to = "Log_Price"
+  )
+
+# Create a sequential time variable
+log_prices_long <- log_prices_long %>%
+  mutate(
+    Time = (Year - 1) * 12 + match(Month, month.abb)  # Time = 1, 2, ..., 300 (25 years * 12 months)
+  )
+```
+
+
+
+
+From this we know that there exists seasonality, indicating SARIMA is the appropriate approach.
+```{r}
+sarima(log_prices, 0, 1, 1)
+
+acf(log_prices)
+pacf(log_prices)
+acf(diff(log_prices))
+pacf(diff(log_prices))
+
+```
+From first differencing, it suggests that p,d,q = 1,1,1 is the appropriate model.
+- homoscadity assumption holds 
+
+From decomposition, we see clear seasonality pattern, this suggests that we need to us ARIMA(p,d,q)x(P,D,Q)_s model
+How else do we make assumptions about seasonality pattern? 
+
+
+
+spectral analysis, if our 95% CI is above 0, indiciates there exists significant cyclical shit
+
+
+using regular arima, we can estimate p, d, q
+
+now, we need to estimate P, D, Q, and s
+
+how? by trial and error and looking at it by checking residual assumptions passes or not.
+If not, there is some dependency thats not being captured by multiplicative ARMIA model, suggesting that we need to use ARCH or GARCH
+
+
+```{r}
+auto.arima(prices)
+```
+
+
+
+
+
+
+
