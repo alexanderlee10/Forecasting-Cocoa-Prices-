@@ -1,0 +1,226 @@
+---
+title: "jae_work"
+output: html_document
+date: "2025-03-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(lubridate)
+library(dplyr)
+library(astsa)
+```
+
+```{r} 
+# load data
+prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=FALSE)
+ghana_data <- read_csv("Ghana_data.csv", show_col_types=FALSE)
+```
+
+```{r}
+clean_ghana <- ghana_data %>%
+  mutate(DATE = ymd(DATE)) %>%
+  distinct(DATE, .keep_all = TRUE) %>%
+  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
+  arrange(DATE)
+clean_ghana
+```
+```{r}
+total_duplicates <- sum(duplicated(clean_ghana))
+final_ghana <- clean_ghana %>%
+  select(DATE, PRCP, TAVG)
+```
+
+
+```{r}
+# Find rows with duplicated dates
+duplicate_dates <- prices_data %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+# Modify the column name from ICCO daily price (US$/tonne) to Price
+prices_data <- rename(
+  prices_data, 
+  Price=`ICCO daily price (US$/tonne)`
+)
+
+# View the results
+print(duplicate_dates)
+
+```
+
+
+```{r}
+data <- prices_data %>%
+  mutate(Date = ymd(Date)) %>%
+  arrange(Date) %>%
+  mutate(
+    next_price = lead(Price),
+    next_date = lead(Date),
+    days_diff = as.numeric(next_date - Date),
+    price_diff = next_price - Price
+  ) %>%
+  filter(
+    days_diff == 1,          # Strictly consecutive days
+    price_diff > 100,        # Price increase > $100
+    !is.na(price_diff)       # Remove NA from the last row
+  ) %>%
+  select(Date, Price, next_date, next_price, price_diff)
+```
+
+```{r}
+clean_price <- prices_data %>%
+  distinct() %>%
+  filter(!(Date == "30/01/2024" & `Price` == 10676.42)) %>%
+  filter(!(Date == "31/01/2024" & `Price` == 10888.05))
+```
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- clean_price %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+print(duplicate_dates)
+
+```
+
+
+```{r}
+final_price <- clean_price %>%
+  select(Date, `Price`)
+```
+
+
+```{r}
+final_price <- final_price %>%
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y"))
+# Ensure DATE column is already Date type (if not, convert)
+final_ghana <- final_ghana %>%
+  mutate(DATE = as.Date(DATE))
+
+```
+
+
+
+```{r}
+combined_data <- final_price %>%
+  inner_join(final_ghana, by = c("Date" = "DATE"))
+
+combined_data
+```
+
+
+```{r}
+sorted_data <- combined_data %>%
+  mutate(Date = ymd(Date)) %>%       # Convert to proper date format
+  arrange(Date) %>%                 # Sort by ascending date
+  select(Date, everything())        # Ensure date column comes first
+
+# View sorted data
+sorted_data
+```
+```{r}
+sorted_data <- sorted_data %>%
+  rename(
+    date = Date,
+    daily_price = `Price`,  
+    precipitation = PRCP,                               
+    avg_temperature = TAVG                             
+  )
+
+```
+
+```{r}
+# only keep date and daily_price
+univariate_data <- sorted_data %>%
+  select(date, daily_price)
+head(univariate_data)
+
+# from univeriate data, check if there are misisng dates
+missing_dates <- univariate_data %>%
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>%
+  filter(is.na(daily_price))
+
+length(missing_dates$date)
+```
+
+```{r}
+# take the monthly average
+monthly_avg <- univariate_data %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(avg_price = mean(daily_price, na.rm = TRUE))
+
+monthly_avg$year_month <- ym(monthly_avg$year_month)
+
+
+monthly_avg
+head(monthly_avg)
+# make monthly_avg date type
+# check if there are missing months
+missing_months <- monthly_avg %>%
+  complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
+  filter(is.na(avg_price))
+
+missing_months
+# use linear interpolation to fill in missing values
+monthly_avg <- monthly_avg %>%
+  complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
+  fill(avg_price) %>%
+  arrange(year_month)
+
+monthly_avg
+```
+
+
+```{r}
+univariate_ts <- ts(monthly_avg$avg_price, frequency = 12, start = c(1994, 10))
+```
+
+```{r}
+plot(univariate_ts)
+
+
+```
+```{r}
+# check ACF and PACF
+xt = diff(log(univariate_ts))[-1]
+# xt = log(yt) - log(yt-1)
+plot(xt)
+```
+
+```{r}
+acf(xt)
+# from acf, we see AR(1) using fuckin GARCH
+pacf(xt)
+```
+
+```{r}
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
