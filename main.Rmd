@@ -157,8 +157,228 @@ sorted_data <- sorted_data %>%
 ```
 
 ```{r}
-sorted_data
+# make a new dataframe that takes the monthly average of the daily price
+
+monthly_data <- sorted_data %>%
+  # Convert each Date to the first day of its month (floor_date)
+  mutate(YearMonth = floor_date(Date, "month")) %>%
+  group_by(YearMonth) %>%
+  summarise(
+    avg_Price = mean(Price, na.rm = TRUE),
+    avg_PRCP  = mean(PRCP, na.rm = TRUE),
+    avg_TAVG  = mean(TAVG, na.rm = TRUE)
+  )
+# make na to 0
+monthly_data[is.na(monthly_data)] <- 0
+monthly_data <- monthly_data %>%
+  filter(YearMonth < "2024-01-01")
+
+# make time series object that starts from 1994-10
+monthly_data_ts <- ts(monthly_data$avg_Price, start=c(1994, 10), frequency = 12)
+monthly_data_ts
 ```
+
+
+```{r}
+# only look at pre 2024 data
+
+
+```
+
+```{r}
+plot(monthly_data_ts, type = "l", xlab = "Year", ylab = "Monthly Average Price", main = "Average Price Over Time")
+```
+
+From inspection, we can see that the data is not stationary. We can confirm this by looking at the ACF and PACF plots.
+
+```{r}
+# ACF and PACF plots
+acf(monthly_data_ts)
+pacf(monthly_data_ts)
+```
+We see that the ACF plot has a slow decay and the PACF plot has a sharp cutoff at lag 1. This suggests that the data is not stationary and we need to difference the data.
+
+```{r}
+
+# Differencing the data
+diff_monthly_data_ts <- diff(monthly_data_ts)
+plot(diff_monthly_data_ts, type = "l", xlab = "Year", ylab = "Monthly Average Price", main = "Differenced Average Price Over Time")
+acf(diff_monthly_data_ts)
+pacf(diff_monthly_data_ts)
+```
+From ACF and PACF plots, we see that the data is stationary after differencing. However, by approximately 2023, we see large deviations from the mean. This suggests that the data is not homoscedastic. We can confirm this by checking the variance of the data.
+
+```{r}
+# Checking for Homoskedcaocty (constant variance) with monthly data by comparing pre 2023 and post 2023 
+x <- diff_monthly_data_ts
+# Determine the number of observations and split the data in half
+split = 340
+
+# Compute the sample variances for the first half and the second half
+var_first_half <- var(x[1:split])
+var_second_half <- var(x[(split):n])
+cat("Variance of pre-2023 monthly data:", var_first_half, "\n")
+cat("Variance of post-2023 monthly data:", var_second_half, "\n")
+```
+
+Clearly, the variance of the data is not constant over time. This suggests that the data is not homoscedastic.
+To stabilize the variance, we can take the log of the data.
+
+```{r}
+log_monthly_data_ts<- log(monthly_data_ts)
+diff_log_monthly_data_ts <- diff(log_monthly_data_ts)
+
+length(diff_log_monthly_data_ts)
+split = 340
+
+# Compute the sample variances for the first half and the second half
+var_first_half <- var(diff_log_monthly_data_ts[1:split])
+var_second_half <- var(diff_log_monthly_data_ts[(split):n])
+cat("Variance of pre-2023 monthly data:", var_first_half, "\n")
+cat("Variance of post-2023 monthly data:", var_second_half, "\n")
+```
+
+Here, we see that difference in variance of pre-2023 and post 2023 is much smaller than before. This suggests that the variance is more stable after taking the log of the data.
+
+We will also try to stabilize the variance by taking the boxcox transformation of the data.
+```{r}
+# Box-Cox transformation
+lambda <- BoxCox.lambda(monthly_data_ts)
+boxcox_monthly_data_ts <- BoxCox(monthly_data_ts, lambda)
+diff_boxcox_monthly_data_ts <- diff(boxcox_monthly_data_ts)
+
+
+var_first_half <- var(diff_boxcox_monthly_data_ts[1:split])
+var_second_half <- var(diff_boxcox_monthly_data_ts[(split):n])
+cat("Variance of pre-2023 monthly data:", var_first_half, "\n")
+cat("Variance of post-2023 monthly data:", var_second_half, "\n")
+
+```
+```{r}
+plot(boxcox_monthly_data_ts)
+```
+Taking the Box-Cox transformation of the data also stabilizes the variance. We can proceed with ARIMA modeling using the Box-Cox transformed data.
+
+
+```{r}
+# ACF and PACF plots of the differenced log data
+acf(diff_log_monthly_data_ts)
+pacf(diff_log_monthly_data_ts)
+```
+Looking at the ACF and PACF plots, we see that the data is stationary and we can proceed with ARIMA modeling.
+
+
+We also want to know if the series has seasonality. We can check this by looking at the spectral analysis of the data.
+```{r}
+# Spectral analysis of the differenced log data
+spec_log_monthly_data_ts <- mvspec(diff_log_monthly_data_ts, demean = TRUE)
+
+peak_index_n <- which.max(spec_log_monthly_data_ts$spec)
+omega_u_n <- spec_log_monthly_data_ts$freq[peak_index_n]
+peak_value_n <- spec_log_monthly_data_ts$spec[peak_index_n]
+cat("Predominant frequency (standardized) =", omega_u_n, "\n")
+cat("Spectral peak (standardized) at that frequency =", peak_value_n, "\n")
+```
+
+```{r}
+# Find the 90% confidence interval for the peak value
+alpha <- 0.1
+nu_n <- spec_log_monthly_data_ts$df
+lower_factor_n <- nu_n / qchisq(1 - alpha/2, df = nu_n)
+upper_factor_n <- nu_n / qchisq(alpha/2, df = nu_n)
+lower_n <- peak_value_n * lower_factor_n
+upper_n <- peak_value_n * upper_factor_n
+cat("90% CI for f_u(omega_u) with standardization:",
+"[", lower_n, ",", upper_n, "]\n")
+```
+
+Spectral analysis looks for dominant seasonal frequencies by examining how much variance in the series is concentrated at each frequency. The 90% confidence interval for the spectral density at a peak index is [0.0007468138, 0.04431633]. 
+
+From this, we see that fairly small and close to zero. This indicates that the series does not have a pronounced seasonal (or cyclical) component at the tested frequency, supporting your conclusion that there is no significant seasonality in the data. This suggests that we can proceed with ARIMA modeling.
+
+From the ACF and PACF plots, we see that the ACF plot has a sharp cutoff after the first lag, suggesting a MA(1) model. The PACF plot has a sharp cutoff, suggesting that there is no autoregressive component. We will compare the AIC values of ARIMA(0,1,1) and ARIMA(0,1,0) models to determine the best model.
+
+```{r}
+# Fit various ARIMA models
+fit011 <- sarima(log_monthly_data_ts, 0,1,1)
+fit111 <- sarima(log_monthly_data_ts, 1,1,1)
+fit110 <- sarima(log_monthly_data_ts, 1,1,0)
+fit210 <- sarima(log_monthly_data_ts, 2,1,0)
+```
+
+From the AIC values, we see that the ARIMA(0,1,1) model has the lowest AIC value of -966.8035 This suggests that the ARIMA(0,1,1) model is the best model for the data.
+
+
+```{r}
+library(rugarch)
+log_returns <- diff(log_monthly_data_ts)
+
+spec <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  mean.model     = list(armaOrder = c(1, 0), include.mean = TRUE),
+  distribution.model = "norm"
+)
+
+fit <- ugarchfit(spec, data = log_returns)
+forecast <- ugarchforecast(fit, n.ahead = 10)
+forecast
+```
+
+```{r}
+
+last_price <-
+# Extract all forecasted log returns (e.g., a vector for multiple steps)
+f_log_returns <- fitted(forecast)
+
+# Compute cumulative forecast (sum of log returns corresponds to product in price space)
+price_forecasts <- last_price * exp(cumsum(f_log_returns))
+
+
+```
+
+```{r}
+# Forecast the next 12 months using the best model
+forecast_12 <- forecast(best_model, h = 12)
+plot(forecast_12, xlab = "Year", ylab = "Monthly Average Price", main = "Forecasted Monthly Average Price")
+forecasted_values <- exp(forecast_12$mean)
+
+# look at the actual forecasted values by taking the exp of the Point Forecast
+forecasted_values
+
+
+# compare with the actual values
+compare_data <- monthly_data %>%
+  filter(YearMonth >= "2023-12-01") %>%
+  # select avg_Price and YearMonth
+  select(YearMonth, avg_Price)
+```
+
+```{r}
+# add the forecasted values to the compare_data dataframe
+compare_results <- cbind(compare_data, forecasted_values)
+# change forecasted values column name to univariate_ARIMA_forecast
+colnames(compare_results)[3] <- "univariate_ARIMA_forecast"
+colnames(compare_results)[2] <- "TRUE_price"
+compare_results
+
+# get mse of the forecasted values
+mse <- mean((compare_results$TRUE_price - compare_results$univariate_ARIMA_forecast)^2)
+```
+
+```{r}
+compare_results
+mse
+```
+
+
+
+
+
+
+
+
+
+
 ```{r}
 # make new data that converts the sorted_data$daily_price into monthly data by taking the average of the month
 monthly_data <- sorted_data %>%
@@ -324,9 +544,23 @@ how? by trial and error and looking at it by checking residual assumptions passe
 If not, there is some dependency thats not being captured by multiplicative ARMIA model, suggesting that we need to use ARCH or GARCH
 
 
+
+# I think its kinda of sus that our final ARIMA model is this simple.
+But I think its also okay
+
+# so we have to use ARCH or GARCH because they take into accoutn of hetero
+
+
 ```{r}
-auto.arima(log(prices))
+auto.arima(log(prices), seasonal=TRUE)
 ```
+
+
+1. stick with ARIMA (bad) model for classical ts method (iguess if we can, we can do some GARCH time permitting)
+we can actually forecast dates beyond that was given
+
+2. fix that ML approach that we had
+we cant because we dont have future info about features. 
 
 
 ```{r}
