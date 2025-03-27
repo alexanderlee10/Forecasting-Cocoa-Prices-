@@ -195,7 +195,6 @@ optimal_model
 ```
 
 To check for homoscedasticity, we want to check if the variance of the residuals is constant over time
-# Checking vaar
 
 ```{r}
 
@@ -226,7 +225,6 @@ cat("Variance second half of log_price:", var_second_half, "\n")
 
 Since the variance of the log_prices is around the same, it suggests that homoskedasticity holds.
 
-## 
 We logged to stabilize our variance, although it is still not enough, we will work with this, and if we need to, we will use ARCH or GARCH models to account for this.
 
 
@@ -329,27 +327,89 @@ If not, there is some dependency thats not being captured by multiplicative ARMI
 ```{r}
 auto.arima(log(prices))
 ```
+
+
 ```{r}
-fit011 <- sarima(log_prices, 0, 1, 1)
-  
-  
+fit011 <- sarima(prices, 0, 1, 1)
+# forecast
+plot(forecast(prices, 24))
 ```
 ```{r}
 fit111 <- sarima(log_prices, 1, 1, 1)
-  
-  
 ```
 ```{r}
 fit112 <- sarima(log_prices, 0, 1, 0)
-
-
-
 ```
 
 
 ```{r}
 fit111 <- sarima(log_prices, 0, 1, 0)
-  
-  
 ```
 We can look at the PACF and the ACF to see the cutoff is in between 0-1 however ARIMA models must be integer values which suggest that the optimal model will have AR(1) or AR(0) and MA(1) or MA(0). We also know that we need to difference the data. We can make a ARIMA(0,1,0), ARIMA(0,1,1), and ARIMA(1,1,1). After looking at the other models we see that ARIMA(0,1,1) has the lowest AIC of -2.699233 and  must be the best model.
+
+```{r}
+fit011
+
+# forecast next 12 months using fit011
+forecast_011 <- forecast(fit011, h = 12)
+
+```
+
+
+```{r}
+library(rugarch)
+library(FinTS)
+
+spec <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(0, 1), include.mean = TRUE),
+  distribution.model = "norm"  # Alternatively "std" if you suspect heavy tails
+)
+fit <- ugarchfit(spec = spec, data = prices)
+
+# View the fitted model summary
+print(fit)
+
+```
+
+```{r}
+library(vars)
+# from sorted data, select daily_price, precipitation, avg_temperature
+# change all NA values to 0 in sorted_data
+sorted_data[is.na(sorted_data)] <- 0
+
+# just get average monthly data
+monthly_data <- sorted_data %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(
+    daily_price = mean(daily_price),
+    precipitation = mean(precipitation),
+    avg_temperature = mean(avg_temperature)
+  ) %>%
+  arrange(year_month)
+
+
+var_ts <- ts(monthly_data[, c("daily_price", "precipitation", "avg_temperature")], frequency = 12)
+lag_selection <- VARselect(var_ts, lag.max = 12, type = "const")
+print(lag_selection$selection)
+
+tail(monthly_data)
+
+```
+
+
+```{r}
+# split the data into training and testing sets so that testing set is last 12 months from monthly
+
+
+
+```
+
+
+```{r}
+var_forecast
+var_fcst <- var_forecast$fcst$daily_price
+# plot the forecasted values's first column
+plot(var_fcst[, 1], type = "l", xlab = "Time", ylab = "Daily Price", main = "Forecasted Daily Prices")
+```

@@ -379,7 +379,7 @@ summary(filtered_inflation)
 ```{r}
 # 1) Plot the first series (red) with normal axes
 plot(
-  x    = filtered_inflation$date, # if necessary %m+% months(16),
+  x    = filtered_inflation$date,
   y    = filtered_inflation$inflation,
   type = "l",
   col  = "red",
@@ -407,37 +407,188 @@ mtext("Daily Price", side = 4, line = 3)  # label the new axis
 ```
 
 ```{r}
-plot(
-  x    = filtered_inflation$date,
-  y    = filtered_inflation$inflation,
-  type = "l",
-  col  = "red",
-  xlab = "Date",
-  ylab = "Inflation",
-  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
-)
+# Shift 'date'
+filtered_inflation <- filtered_inflation %>%
+  mutate(date = date %m+% months(16))
 
-par(new = TRUE)
-plot(
-  x    = filtered_sp$date, # if necessary %m+% months(8)
-  y    = filtered_sp$gsci,
-  type = "l",
-  col  = "blue",
-  xlab = "",
-  ylab = "",
-  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28")),
-  axes = FALSE   
-)
+filtered_sp <- filtered_sp %>%
+  mutate(date = date %m+% months(24))
 
-axis(side = 4)
-mtext("S&P GSCI", side = 4, line = 3)
+# Adjust the numeric value for estimation
+filtered_inflation <- filtered_inflation %>%
+  mutate(inflation = as.numeric(inflation) * 200)
+
+filtered_sp$gsci <- filtered_sp$gsci * 12
 ```
 
+```{r}
+# 1) Aggregate daily_price to monthly average
+df_blue_monthly <- filtered_sorted %>%
+  mutate(month_start = floor_date(date, "month")) %>%
+  group_by(month_start) %>%
+  summarize(
+    monthly_avg_price = mean(daily_price, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  rename(date = month_start)  # rename for consistency
+```
+
+```{r}
+df_gsci_monthly <- filtered_sp %>%
+  mutate(month_start = floor_date(date, "month")) %>%
+  group_by(month_start) %>%
+  summarize(
+    monthly_gsci = mean(gsci, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  rename(date = month_start)
+```
+
+```{r}
+df_monthly <- df_blue_monthly %>%
+  left_join(filtered_inflation, by = "date") %>%
+  left_join(df_gsci_monthly, by = "date")
+```
+
+```{r}
+df_monthly <- df_monthly %>%
+  mutate(gsci_div2 = monthly_gsci / 2)
+```
+
+```{r}
+start_year  <- year(df_monthly$date[1])
+start_month <- month(df_monthly$date[1])
 
 
+ts_price <- ts(
+  data = df_monthly$monthly_avg_price,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+
+ts_inflation <- ts(
+  data = df_monthly$inflation,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+
+ts_gsci_div2 <- ts(
+  data = df_monthly$gsci_div2,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+
+# Combine them into a matrix for xreg:
+xreg_all <- cbind(ts_inflation, ts_gsci_div2)
+```
+
+```{r}
+fit_arima <- auto.arima(
+  y    = ts_price,
+  xreg = xreg_all,     # inflation and (gsci/2)
+  stepwise      = FALSE,
+  approximation = FALSE,
+  seasonal      = TRUE
+)
+
+summary(fit_arima)
+```
+
+```{r}
+# Extract fitted values from the model:
+fitted_vals <- fit_arima$fitted
+
+# Convert to numeric
+fitted_vals <- as.numeric(fitted_vals)
+
+# Actual
+actual_vals <- df_monthly$monthly_avg_price
+```
+
+```{r}
+mae <- mean(abs(actual_vals - fitted_vals), na.rm = TRUE)
+mse <- mean((actual_vals - fitted_vals)^2, na.rm = TRUE)
+
+cat("MAE =", mae, "\n")
+cat("MSE =", mse, "\n")
+```
+
+```{r}
+plot(
+  x    = df_monthly$date,
+  y    = df_monthly$monthly_avg_price,
+  type = "l",
+  col  = "blue",
+  xlab = "Date",
+  ylab = "Price",
+  main = "Actual vs Model (Base R)"
+)
+
+lines(
+  x   = df_monthly$date,
+  y   = fitted_vals,
+  col = "red",
+  lty = 2
+)
+
+legend(
+  "topleft",
+  legend = c("Actual", "Model"),
+  col    = c("blue", "red"),
+  lty    = c(1, 2),
+  cex    = 0.9
+)
+```
+```{r}
+ts_price <- ts(
+  data = df_monthly$monthly_avg_price,
+  frequency = 12
+)
+ts_price <- log(ts_price)
+
+arima_fit <- auto.arima(
+  y = ts_price,
+  seasonal = TRUE
+)
 
 
+plot(
+  x = df_monthly$date,
+  y = actual_values,
+  type = "l",
+  col = "blue",
+  xlab = "Date",
+  ylab = "Price",
+  main = "Actual vs Model (only prices)"
+)
 
+lines(
+  x = df_monthly$date,
+  y = fitted_values,
+  col = "red",
+  lty = 2
+)
 
+# MAE and MSE
+mae <- mean(abs(actual_values - fitted_values), na.rm = TRUE)
+mse <- mean((actual_values - fitted_values)^2, na.rm = TRUE)
+# print MAE and MSE
+cat("MAE =", mae, "\n")
+cat("MSE =", mse, "\n")
+```
 
+```{r}
+# remove all rows with NA
+df_monthly_cleaned <- df_monthly %>%
+  drop_na()
 
+df_monthly_cleaned
+
+Train <- df_monthly_cleaned %>%
+  filter(date < ymd("2023-12-01"))
+Test <- df_monthly_cleaned %>%
+  filter(date >= ymd("2023-12-01"))
+
+xreg = Train[, c("inflation", "gsci_div2")]
+Arima.fit <- auto.arima(Train$monthly_avg_price, xreg = xreg, seasonal = TRUE)
+```
