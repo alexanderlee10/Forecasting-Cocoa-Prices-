@@ -34,14 +34,16 @@ clean_ghana <- ghana_data %>%
   arrange(DATE)
 clean_ghana
 ```
+
+
 ```{r}
 total_duplicates <- sum(duplicated(clean_ghana))
 total_duplicates
 ```
+
 ```{r}
-# select the columns we needDATE, PRCP, TAVG)
-final_ghana <- clean_ghana %>%
-  select(DATE, PRCP, TAVG)
+# select the columns we need (DATE, PRCP, TAVG)
+final_ghana <- clean_ghana[, c("DATE", "PRCP", "TAVG")]
 final_ghana
 ```
 
@@ -120,9 +122,7 @@ print(duplicate_dates)
 
 
 ```{r}
-final_price <- clean_price %>%
-  select(Date, `Price`)
-
+final_price <- clean_price[, c("Date", "Price")]
 ```
 
 
@@ -144,11 +144,11 @@ combined_data <- final_price %>%
 
 combined_data
 ```
+
 ```{r}
 sorted_data <- combined_data %>%
   mutate(Date = ymd(Date)) %>%       # Convert to proper date format
-  arrange(Date) %>%                 # Sort by ascending date
-  select(Date, everything())        # Ensure date column comes first
+  arrange(Date)
 
 # View sorted data
 sorted_data
@@ -173,14 +173,12 @@ sorted_data
 sorted_data <- sorted_data %>%
   mutate(precipitation_binary = if_else(is.na(precipitation), 0, 1))
 
+sorted_data
+
 ```
 
 ```{r}
-sorted_data
-```
-```{r}
-sorted_data <- sorted_data %>%
-  select(date, daily_price, precipitation_binary, avg_temperature)
+sorted_data <- sorted_data[, c("date", "daily_price", "precipitation_binary", "avg_temperature")]
 ```
 
 ```{r}
@@ -188,13 +186,9 @@ sorted_data <- sorted_data %>%
   rename(
     precipitation = precipitation_binary
   )
-
-```
-
-
-```{r}
 sorted_data
 ```
+
 
 
 ```{r}
@@ -245,9 +239,7 @@ adf.test(var_df$avg_temperature)
 
 ```{r}
 # now do it into the data frame 
-var_data <- var_df %>%
-  select(diff_log_price, precipitation, avg_temperature) %>%
-  as.data.frame()
+var_data <- var_df[, c("diff_log_price", "precipitation", "avg_temperature")]
 var_data
 ```
 
@@ -290,10 +282,16 @@ plot(forecasted_price, type = "l", col = "blue", xlab = "Days", ylab = "Price", 
 ```
 
 ```{r}
-# Find actual price from 11-28-2025 to 12-10-2024
-prices_data %>%
-  filter(Date >= "28/11/2024" & Date <= "10/12/2024") %>%
-  select(Date, Price)
+# from prices_data, get the actual price from 29/11/2024 to 9/12/2024
+
+prices_data$Date <- as.Date(prices_data$Date, format="%d/%m/%Y")
+
+# Filter dates and select actual_price
+filtered_prices <- prices_data[prices_data$Date >= as.Date("29/11/2024", "%d/%m/%Y") & 
+                               prices_data$Date <= as.Date("15/12/2024", "%d/%m/%Y"), 
+                               c("Date", "Price")]
+
+filtered_prices
 ```
 
 ```{r}
