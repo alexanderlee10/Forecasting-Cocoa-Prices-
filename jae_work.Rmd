@@ -4,10 +4,6 @@ output: html_document
 date: "2025-03-27"
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
 ```{r}
 # load libraries
 library(tidyverse)
@@ -16,22 +12,24 @@ library(forecast)
 library(lubridate)
 library(dplyr)
 library(astsa)
+library(fGarch)
+library(xts)
+library(rugarch)
 ```
 
 ```{r} 
 # load data
-prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=FALSE)
-ghana_data <- read_csv("Ghana_data.csv", show_col_types=FALSE)
+prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=TRUE)
+ghana_data <- read_csv("Ghana_data.csv", show_col_types=TRUE)
 ```
 
 ```{r}
 clean_ghana <- ghana_data %>%
   mutate(DATE = ymd(DATE)) %>%
   distinct(DATE, .keep_all = TRUE) %>%
-  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
-  arrange(DATE)
-clean_ghana
+  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28")))
 ```
+
 ```{r}
 total_duplicates <- sum(duplicated(clean_ghana))
 final_ghana <- clean_ghana %>%
@@ -85,8 +83,6 @@ clean_price <- prices_data %>%
 ```
 
 ```{r}
-# Load necessary library
-
 # Find rows with duplicated dates
 duplicate_dates <- clean_price %>%
   group_by(Date) %>%        # Group by the "Date" column
@@ -150,7 +146,7 @@ univariate_data <- sorted_data %>%
   select(date, daily_price)
 head(univariate_data)
 
-# from univeriate data, check if there are misisng dates
+# from univariate data, check if there are misisng dates
 missing_dates <- univariate_data %>%
   complete(date = seq.Date(min(date), max(date), by = "day")) %>%
   filter(is.na(daily_price))
@@ -168,15 +164,12 @@ monthly_avg <- univariate_data %>%
 monthly_avg$year_month <- ym(monthly_avg$year_month)
 
 
-monthly_avg
-head(monthly_avg)
 # make monthly_avg date type
 # check if there are missing months
 missing_months <- monthly_avg %>%
   complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
   filter(is.na(avg_price))
 
-missing_months
 # use linear interpolation to fill in missing values
 monthly_avg <- monthly_avg %>%
   complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
@@ -185,37 +178,121 @@ monthly_avg <- monthly_avg %>%
 
 monthly_avg
 ```
+```{r}
+# keep train data as dates 2023 and before
+train_data <- monthly_avg %>%
+  filter(year_month < ym("2024-01"))
+
+test_data <- monthly_avg %>%
+  filter(year_month >= ym("2023-12"))
+```
 
 
 ```{r}
-univariate_ts <- ts(monthly_avg$avg_price, frequency = 12, start = c(1994, 10))
+univariate_ts <- ts(train_data$avg_price, frequency = 12, start = c(1994, 10))
 ```
 
 ```{r}
-plot(univariate_ts)
-
-
+univariate_ts
 ```
+
+
 ```{r}
 # check ACF and PACF
-xt = diff(log(univariate_ts))[-1]
+xt = diff(log(univariate_ts))
 # xt = log(yt) - log(yt-1)
 plot(xt)
 ```
 
 ```{r}
-acf(xt)
-# from acf, we see AR(1) using fuckin GARCH
-pacf(xt)
+acf2(xt)
+
+model_AR1 = sarima(xt, 1, 0, 0)
+model_MA1 = sarima(xt, 0, 0, 1)
+sresxt = resid(model_AR1$fit)
+
+res_sq = sresxt^2 #Squared residuals
+acf2(res_sq, max.lag = 50) #It shows that there are some dependencies among residuals
 ```
 
 ```{r}
-
-
+garch_model_10 = garchFit(~arma(0,1)+garch(1,0), xt, cond.dist='std')
+garch_model_11 = garchFit(~arma(0,1)+garch(1,1), xt, cond.dist='std')
+garch_model_20 = garchFit(~arma(0,1)+garch(2,0), xt, cond.dist='std')
+garch_model_12 = garchFit(~arma(0,1)+garch(1,2), xt, cond.dist='std')
 ```
 
 
+```{r}
+# Forecasting
+# compare with test data
+test_ts <- ts(test_data$avg_price, frequency = 12, start = c(2023, 12))
+garch_model_10_forecast <- predict(garch_model_10, n.ahead = 11)
+garch_model_11_forecast <- predict(garch_model_11, n.ahead = 11)
+garch_model_20_forecast <- predict(garch_model_20, n.ahead = 11)
+garch_model_12_forecast <- predict(garch_model_12, n.ahead = 11)
+test_price <- diff(log(test_ts))
+test_price <- test_price[1:11]
+```
 
+```{r}
+#make a dataframe for the forecasted values
+forecasted_values <- data.frame(
+  garch_model_10_forecast$meanForecast,
+  garch_model_11_forecast$meanForecast,
+  garch_model_20_forecast$meanForecast,
+  garch_model_12_forecast$meanForecast,
+  test_price
+)
+# find mape for each model
+mape_garch_10 <- sum(abs((forecasted_values$garch_model_10_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+mape_garch_11 <- sum(abs((forecasted_values$garch_model_11_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+mape_garch_20 <- sum(abs((forecasted_values$garch_model_20_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+mape_garch_12 <- sum(abs((forecasted_values$garch_model_12_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+
+#print each mape
+print(mape_garch_10)
+print(mape_garch_11)
+print(mape_garch_20)
+print(mape_garch_12)
+```
+
+
+```{r}
+# now revert back to the original scale
+# xt = diff(log(univariate_ts))
+# xt = log(yt) - log(yt-1)
+# log(yt) = xt + log(yt-1)
+# yt = exp(xt + log(yt-1))
+
+forecased_price_scaled_10 = exp(forecasted_values$garch_model_10_forecast + log(test_ts[1]))
+forecased_price_scaled_11 = exp(forecasted_values$garch_model_11_forecast + log(test_ts[1]))
+forecased_price_scaled_20 = exp(forecasted_values$garch_model_20_forecast + log(test_ts[1]))
+forecased_price_scaled_12 = exp(forecasted_values$garch_model_12_forecast + log(test_ts[1]))
+
+length(test_ts[1:11])
+# make a dataframe for the forecasted values
+forecasted_values_scaled <- data.frame(
+  forecased_price_scaled_10,
+  forecased_price_scaled_11,
+  forecased_price_scaled_20,
+  forecased_price_scaled_12,
+  test_ts[1:11]
+)
+
+# find mape for each model
+mape_garch_10_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_10 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+mape_garch_11_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_11 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+mape_garch_20_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_20 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+mape_garch_12_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_12 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+
+#print each mape
+print(mape_garch_10_scaled)
+print(mape_garch_11_scaled)
+print(mape_garch_20_scaled)
+print(mape_garch_12_scaled)
+
+```
 
 
 

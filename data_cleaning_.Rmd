@@ -1,0 +1,809 @@
+---
+title: "cleaning_data"
+output: pdf_document
+date: "`r Sys.Date()`"
+---
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(lubridate)
+library(dplyr)
+library(astsa)
+```
+
+```{r} 
+# load data
+prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=FALSE)
+ghana_data <- read_csv("Ghana_data.csv", show_col_types=FALSE)
+```
+
+```{r}
+clean_ghana <- ghana_data %>%
+  mutate(DATE = ymd(DATE)) %>%
+  distinct(DATE, .keep_all = TRUE) %>%
+  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
+  arrange(DATE)
+clean_ghana
+```
+```{r}
+total_duplicates <- sum(duplicated(clean_ghana))
+total_duplicates
+```
+```{r}
+final_ghana <- clean_ghana %>%
+  select(DATE, PRCP, TAVG)
+
+final_ghana
+```
+
+
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- prices_data %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+# Modify the column name from ICCO daily price (US$/tonne) to Price
+prices_data <- rename(
+  prices_data, 
+  Price=`ICCO daily price (US$/tonne)`
+)
+
+# View the results
+print(duplicate_dates)
+
+```
+
+
+```{r}
+data <- prices_data %>%
+  mutate(Date = ymd(Date)) %>%
+  arrange(Date) %>%
+  mutate(
+    next_price = lead(Price),
+    next_date = lead(Date),
+    days_diff = as.numeric(next_date - Date),
+    price_diff = next_price - Price
+  ) %>%
+  filter(
+    days_diff == 1,          # Strictly consecutive days
+    price_diff > 100,        # Price increase > $100
+    !is.na(price_diff)       # Remove NA from the last row
+  ) %>%
+  select(Date, Price, next_date, next_price, price_diff)
+
+# Print results
+if (nrow(data) == 0) {
+  message("No rows met the criteria.")
+} else {
+  print(data)
+}
+
+```
+
+
+```{r}
+clean_price <- prices_data %>%
+  distinct() %>%
+  filter(!(Date == "30/01/2024" & `Price` == 10676.42)) %>%
+  filter(!(Date == "31/01/2024" & `Price` == 10888.05))
+```
+
+```{r}
+# Load necessary library
+
+# Find rows with duplicated dates
+duplicate_dates <- clean_price %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+
+print(duplicate_dates)
+
+```
+
+
+```{r}
+final_price <- clean_price %>%
+  select(Date, `Price`)
+
+```
+```{r}
+final_price <- final_price %>%
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y"))
+
+# Ensure DATE column is already Date type (if not, convert)
+final_ghana <- final_ghana %>%
+  mutate(DATE = as.Date(DATE))
+
+```
+
+
+
+```{r}
+combined_data <- final_price %>%
+  inner_join(final_ghana, by = c("Date" = "DATE"))
+
+combined_data
+```
+```{r}
+sorted_data <- combined_data %>%
+  mutate(Date = ymd(Date)) %>%       # Convert to proper date format
+  arrange(Date) %>%                 # Sort by ascending date
+  select(Date, everything())        # Ensure date column comes first
+
+# View sorted data
+sorted_data
+
+```
+```{r}
+sorted_data <- sorted_data %>%
+  rename(
+    date = Date,
+    daily_price = `Price`,  
+    precipitation = PRCP,                               
+    avg_temperature = TAVG                             
+  )
+
+```
+
+```{r}
+tail(sorted_data)
+```
+```{r}
+# make new data that converts the sorted_data$daily_price into monthly data by taking the average of the month
+monthly_data <- sorted_data %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(
+    daily_price = mean(daily_price),
+    precipitation = mean(precipitation),
+    avg_temperature = mean(avg_temperature)
+  ) %>%
+  arrange(year_month)
+```
+
+```{r}
+# Split the data into training and testing data
+
+# Data from 2024 or before is for training
+train_data <- monthly_data %>% 
+  filter(as.integer(substr(year_month, 1, 4)) <= 2023)
+
+test_data <- monthly_data %>%
+  filter(as.integer(substr(year_month, 1, 4)) > 2023)
+```
+
+
+```{r}
+# This code is here so I dont't have to manually replace all of the following code's monthly_data entries to train_data
+monthly_data <- train_data
+```
+
+```{r}
+prices <- ts(monthly_data$daily_price, frequency = 12)
+plot(prices)
+# months since 1994-10
+ets_aaa <- ets(prices, model = "AAA")
+plot(ets_aaa)
+```
+
+From this we know that there exists seasonality, indicating SARIMA is the appropriate approach.
+```{r}
+# 
+acf(prices)
+pacf(prices)
+acf(diff(prices))
+pacf(diff(prices))
+```
+From first differencing, it suggests that p,d,q = 1,1,1 is the appropriate model.
+
+```{r}
+auto.arima(prices)
+```
+
+
+# PAST WORK
+
+```{r}
+# Transform daily_price into ts object
+dp_ts <- ts(sorted_data$daily_price, frequency = 12)
+plot(sorted_data$date, sorted_data$daily_price)
+
+# Plot ACF and PACF
+acf(dp_ts, main = "ACF of daily_price", lag.max = 120)
+pacf(dp_ts, main = "PACF of daily_price", lag.max = 120)
+```
+
+```{r}
+# Take the first difference
+diff_dp_ts <- diff(dp_ts)
+
+# Plot ACF and PACF
+acf(diff_dp_ts, 
+    main = "ACF pf daily_price with one differencing", 
+    lag.max = 120)
+pacf(diff_dp_ts, 
+     main = "PACF pf daily_price with one differencing", 
+     lag.max = 120)
+```
+
+
+```{r}
+# Take the second difference
+diff_dp_ts2 <- diff(diff_dp_ts)
+
+# Plot ACF and PACF
+acf(diff_dp_ts2, 
+    main = "ACF pf daily_price with two differencing", 
+    lag.max = 120)
+pacf(diff_dp_ts2, 
+     main = "PACF pf daily_price with two differencing", 
+     lag.max = 120)
+```
+
+
+```{r}
+fit_021 <- sarima(dp_ts, 0, 2, 1)
+fit_021
+```
+
+```{r}
+fit_120 <- sarima(dp_ts, 1, 2, 0)
+fit_120
+```
+
+```{r}
+fit_121 <- sarima(dp_ts, 1, 2, 1)
+fit_121
+```
+
+```{r}
+# Implement log transform (should I do this...?)
+dp_ts_log <- log(dp_ts)
+
+fit_121_log <- sarima(dp_ts_log, 1, 2, 1)
+fit_121_log
+```
+
+## Until this point, we just did some ts analysis, ACF, PACF to infer some MA, AR dependency. and potential GARCH model stuff.
+
+
+```{r}
+# ?????????? can we make this somewhat transferable to A2 material
+mvspec(dp_ts,
+       spans = c(3, 3),
+       taper = 0.1, 
+       log = "no",     
+       main = "Spectral Analysis with mvspec"
+) 
+```
+
+## MVSPEC: whats the purpose of this? What kind of information should we get out of spectral analysis?
+
+
+
+```{r}
+# Downloading S&P GSCI. The Purpose of downloading S&P GSCI is to understand the trend of how investors look at the commodities. While it is true that there are tons of other stuff in S&P, I think we should not use Cocoa index directly as causation is not very sure...
+
+# read S&P GSCI
+library(readr)
+sp_gsci <- read.csv2(
+  "S&P.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+clean_sp <- sp_gsci %>%
+  rename(
+    date = "Issue.Date",
+    gsci      = "S.P.GSCI"
+  ) %>%
+  mutate(date = mdy(date)) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  arrange(date)
+```
+
+```{r}
+summary(clean_sp)
+```
+
+```{r}
+filtered_sp <- clean_sp %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+filtered_sorted <- sorted_data %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+# 1) Plot the first series (red) with normal axes
+plot(
+  x    = filtered_sp$date,
+  y    = filtered_sp$gsci,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "S&P GSCI",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 2) Add the second series (blue) on top, with a new y-axis
+par(new = TRUE)  # tell R we will draw on top of the existing plot
+plot(
+  x    = filtered_sorted$date,
+  y    = filtered_sorted$daily_price,
+  type = "l",
+  col  = "blue",
+  axes = FALSE,         # don't draw a new x or y axis
+  xlab = "",            # don't overwrite existing x label
+  ylab = "",            # or y label
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 3) Draw a new axis on the right side, and label it appropriately
+axis(side = 4)                # y-axis on the right
+mtext("Daily Price", side = 4, line = 3)  # label the new axis
+```
+
+```{r}
+inflation <- read.csv2(
+  "inflation.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE,
+)
+
+inflation <- inflation %>%
+  separate(
+    col  = "Date.Inflation.....",  
+    into = c("Date", "Inflation"),  
+    sep  = ","                      
+  )
+```
+
+```{r}
+clean_inflation <- inflation %>%
+  rename(
+    date = "Date",
+    inflation = "Inflation"
+  ) %>%
+  mutate(date = ymd(date)) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  arrange(date)
+
+filtered_inflation <- clean_inflation %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+summary(filtered_inflation)
+```
+
+```{r}
+# 1) Plot the first series (red) with normal axes
+plot(
+  x    = filtered_inflation$date,
+  y    = filtered_inflation$inflation,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "Inflation",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 2) Add the second series (blue) on top, with a new y-axis
+par(new = TRUE)  # tell R we will draw on top of the existing plot
+plot(
+  x    = filtered_sorted$date,
+  y    = filtered_sorted$daily_price,
+  type = "l",
+  col  = "blue",
+  axes = FALSE,         # don't draw a new x or y axis
+  xlab = "",            # don't overwrite existing x label
+  ylab = "",            # or y label
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 3) Draw a new axis on the right side, and label it appropriately
+axis(side = 4)                # y-axis on the right
+mtext("Daily Price", side = 4, line = 3)  # label the new axis
+```
+
+```{r}
+# Convert S&P GSCI from daily to monthly
+df_gsci_monthly <- filtered_sp %>%
+  mutate(month_start = floor_date(date, "month")) %>%
+  group_by(month_start) %>%
+  summarize(
+    monthly_gsci = mean(gsci, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  rename(date = month_start)
+
+df_sorted <- filtered_sorted %>%
+  mutate(month_start = floor_date(date, "month")) %>%
+  group_by(month_start) %>%
+  summarize(
+    monthly_price = mean(daily_price, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  rename(date = month_start)
+```
+
+## CCF test: check relation between inflation, gsci, and cocoa price (IGNORE THIS CCF RIGHT NOW)
+```{r}
+ts_x <- ts(as.numeric(filtered_inflation$inflation), frequency = 12, start = c(2015, 2))
+ts_y <- ts(df_gsci_monthly$monthly_gsci, frequency = 12, start = c(2015, 2))
+diff_x <- diff(ts_x)
+diff_y <- diff(ts_y)
+plot(diff_x, type = "l", main = "Diffed Inflation", ylab = "First Difference")
+ccf_result <- ccf(x = diff_x, y = diff_y, lag.max = 120, plot = TRUE)
+```
+
+```{r}
+ts_z <- ts(df_sorted$monthly_price, frequency = 12, start = c(2015, 2))
+diff_z <- diff(ts_z)
+plot(diff_z, type = "l", main = "Diffed Inflation", ylab = "First Difference")
+ccf_result <- ccf(x = diff_x, y = diff_z, lag.max = 120, plot = TRUE)
+```
+
+```{r}
+# Shift 'date'
+filtered_inflation <- filtered_inflation %>%
+  mutate(date = date %m+% months(17))  # 17 months
+
+filtered_sp <- filtered_sp %>%
+  mutate(date = date %m+% months(25))  # 25 months
+
+# Standardize the 'inflation' and 'gsci' columns so they have mean = 0 and sd = 1.
+filtered_inflation <- filtered_inflation %>%
+  mutate(inflation = scale(as.numeric(inflation)))
+
+filtered_sp <- filtered_sp %>%
+  mutate(gsci = scale(gsci))
+```
+
+```{r}
+# Split Data into 
+cutoff_date <- as.Date("2023-12-01")
+
+train_gsci <- df_gsci_monthly %>%
+  filter(date < cutoff_date)
+test_gsci <- df_gsci_monthly %>%
+  filter(date >= cutoff_date)
+
+train_prices <- df_sorted %>%
+  filter(date < cutoff_date)
+test_prices <- df_sorted %>%
+  filter(date >= cutoff_date)
+
+df_monthly_train <- train_prices %>%
+  left_join(filtered_inflation, by = "date") %>%
+  left_join(train_gsci, by = "date")
+
+df_monthly_test <- test_prices %>%
+  left_join(filtered_inflation, by = "date") %>%
+  left_join(test_gsci, by = "date")
+```
+
+```{r}
+# (1) Log-transform the price in TRAIN
+df_monthly_train <- train_prices %>%
+  inner_join(filtered_inflation, by = "date") %>%
+  inner_join(train_gsci, by = "date")
+
+df_monthly_train <- df_monthly_train %>%
+  mutate(log_price = log(monthly_price), gsci_div2 = monthly_gsci / 2)
+```
+
+```{r}
+# (2) Create the ts object using log-transformed prices
+start_year  <- year(df_monthly_train$date[1])
+start_month <- month(df_monthly_train$date[1])
+
+ts_price_log <- ts(
+  data = df_monthly_train$log_price,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+```
+
+```{r}
+# (3) Keep the external regressors (inflation, gsci_div2) as-is 
+ts_inflation <- ts(
+  data = df_monthly_train$inflation,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+ts_gsci_div2 <- ts(
+  data = df_monthly_train$gsci_div2,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+```
+
+```{r}
+# (4) Fit ARIMA on log_price
+fit_arima_log <- auto.arima(
+  y    = ts_price_log,
+  xreg = cbind(ts_inflation, ts_gsci_div2),
+  stepwise      = FALSE,
+  approximation = FALSE
+)
+
+summary(fit_arima_log)
+```
+
+```{r}
+# (5) Repeat for TEST data
+df_monthly_test <- df_monthly_test %>%
+  mutate(log_price = log(monthly_price), gsci_div2 = monthly_gsci / 2)  
+
+start_year_test  <- year(df_monthly_test$date[1])
+start_month_test <- month(df_monthly_test$date[1])
+
+ts_price_test_log <- ts(
+  data = df_monthly_test$log_price,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+ts_inflation_test <- ts(
+  data = df_monthly_test$inflation,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+ts_gsci_div2_test <- ts(
+  data = df_monthly_test$gsci_div2,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+xreg_test <- cbind(ts_inflation_test, ts_gsci_div2_test)
+colnames(xreg_test) <- c("ts_inflation", "ts_gsci_div2")
+```
+
+```{r}
+# (6) Forecast using the log-scale model
+forecast_log <- forecast(fit_arima_log, xreg = xreg_test)
+```
+
+```{r}
+# (7) Exponentiate the forecast to get back to original price scale
+predicted_prices <- exp(forecast_log$mean)
+```
+
+```{r}
+# (8) Evaluate errors
+# Training Data
+## Actual training prices
+train_actual_prices <- df_monthly_train$monthly_price
+
+## Fitted log prices
+train_fitted_log <- fitted(fit_arima_log)
+
+## Convert to the original prices using exp()
+train_fitted_prices <- exp(train_fitted_log)
+
+# Training Data MSE
+mse_train <- mean((train_actual_prices - train_fitted_prices)^2, na.rm = TRUE)
+cat("Train MSE =", mse_train, "\n")
+
+# Training Data MAPE
+mape_train <- mean(abs(train_actual_prices - train_fitted_prices) / train_actual_prices, na.rm = TRUE) * 100
+cat("Train MAPE =", mape_train, "%\n")
+```
+
+```{r}
+# Testing Data
+## Actual testing prices
+test_actual_prices <- df_monthly_test$monthly_price
+
+# Testing Data MSE
+mse_test <- mean((test_actual_prices - predicted_prices)^2, na.rm = TRUE)
+cat("Test MSE =", mse_test, "\n")
+
+# Testing Data MAPE
+mape_test <- mean(abs(test_actual_prices - predicted_prices) / test_actual_prices, na.rm = TRUE) * 100
+cat("Test MAPE =", mape_test, "%\n")
+```
+
+```{r}
+# Plot Actual vs. Predicted 
+# Create data frame
+plot_train <- df_monthly_train %>%
+  select(date) %>%
+  mutate(
+    actual    = train_actual_prices,
+    predicted = train_fitted_prices,
+    dataset   = "Train"
+  )
+
+plot_test <- df_monthly_test %>%
+  select(date) %>%
+  mutate(
+    actual    = test_actual_prices,
+    predicted = predicted_prices,
+    dataset   = "Test"
+  )
+
+# Connect Training/Testing using bind_rows() 
+plot_all <- bind_rows(plot_train, plot_test)
+
+ggplot(plot_all, aes(x = date)) +
+  geom_line(aes(y = actual,    color = "Actual")) +
+  geom_line(aes(y = predicted, color = "Predicted"), linetype = "dashed") +
+  facet_wrap(~ dataset, scales = "free_x", ncol = 1) +
+  labs(
+    title = "Actual vs. Predicted Cocoa Prices",
+    x     = "Date",
+    y     = "Price",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# (1) Use a nonlinear model
+train_xreg <- cbind(ts_inflation, ts_gsci_div2)
+colnames(train_xreg) <- c("ts_inflation", "ts_gsci_div2")
+
+fit_nnetar_log <- nnetar(
+  y      = ts_price_log,
+  xreg   = train_xreg,
+  size   = 1,  # Prevent overfitting
+  repeats = 50
+)
+
+test_xreg <- cbind(ts_inflation_test, ts_gsci_div2_test)
+colnames(test_xreg) <- c("ts_inflation", "ts_gsci_div2")
+
+forecast_nnetar_log <- forecast(
+  fit_nnetar_log,
+  xreg = test_xreg
+)
+
+summary(fit_nnetar_log)
+summary(forecast_nnetar_log)
+```
+
+```{r}
+# (2) Prediction using testing data
+df_monthly_test <- df_monthly_test %>%
+  mutate(
+    log_price = log(monthly_price),
+    gsci_div2 = monthly_gsci / 2
+  )
+
+start_year_test  <- year(df_monthly_test$date[1])
+start_month_test <- month(df_monthly_test$date[1])
+
+ts_inflation_test <- ts(
+  data = df_monthly_test$inflation,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+ts_gsci_div2_test <- ts(
+  data = df_monthly_test$gsci_div2,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+predicted_log    <- as.numeric(forecast_nnetar_log$mean)
+predicted_prices <- exp(predicted_log)
+```
+
+```{r}
+# (3) Evaluation for training data
+df_monthly_test <- df_monthly_test %>%
+  mutate(
+    log_price = log(monthly_price),
+    gsci_div2 = monthly_gsci / 2
+  )
+
+start_year_test  <- year(df_monthly_test$date[1])
+start_month_test <- month(df_monthly_test$date[1])
+
+ts_inflation_test <- ts(
+  data = df_monthly_test$inflation,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+ts_gsci_div2_test <- ts(
+  data = df_monthly_test$gsci_div2,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+predicted_log    <- as.numeric(forecast_nnetar_log$mean)
+predicted_prices <- exp(predicted_log)
+```
+
+```{r}
+# (4) Evaluation for training data
+# Actual training prices
+train_actual_prices <- df_monthly_train$monthly_price
+
+train_fitted_log <- fit_nnetar_log$fitted         
+train_fitted_prices <- exp(train_fitted_log)    
+
+# MSE (train)
+mse_train <- mean((train_actual_prices - train_fitted_prices)^2, na.rm = TRUE)
+cat("Train MSE =", mse_train, "\n")
+
+# MAPE (train)
+mape_train <- mean(
+  abs(train_actual_prices - train_fitted_prices) / train_actual_prices,
+  na.rm = TRUE
+) * 100
+cat("Train MAPE =", mape_train, "%\n")
+```
+
+```{r}
+# (5) Evaluation for testing data
+# Actual test prices
+test_actual_prices <- df_monthly_test$monthly_price
+
+# MSE (test)
+mse_test <- mean((test_actual_prices - predicted_prices)^2, na.rm = TRUE)
+cat("Test MSE =", mse_test, "\n")
+# MAPE (test)
+mape_test <- mean(abs(test_actual_prices - predicted_prices) / test_actual_prices,
+                  na.rm = TRUE) * 100
+cat("Test MAPE =", mape_test, "%\n")
+```
+
+```{r}
+# (6) Plot
+# Actual prices (train) vs. fitted values
+df_plot_train <- df_monthly_train %>%
+  slice((nrow(df_monthly_train)-length(train_fitted_prices)+1) : nrow(df_monthly_train)) %>%
+  mutate(
+    predicted_price = train_fitted_prices,
+    dataset = "Train"
+  )
+
+# Actual prices (test) vs. predicted values
+df_plot_test <- df_monthly_test %>%
+  dplyr::select(date, monthly_price) %>%
+  mutate(
+    predicted_price = predicted_prices,
+    dataset = "Test"
+  )
+
+df_plot_all <- bind_rows(df_plot_train, df_plot_test)
+
+library(ggplot2)
+ggplot(df_plot_all, aes(x = date)) +
+  geom_line(aes(y = monthly_price, color = "Actual")) +
+  geom_line(aes(y = predicted_price, color = "Predicted"), linetype = "dashed") +
+  facet_wrap(~dataset, scales = "free_x", ncol = 1) +
+  labs(
+    title = "Actual vs. Predicted Cocoa Prices (nnetar)",
+    x = "Date", y = "Price"
+  ) +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+```
+
+
+```{r}
+test_actual_prices
+predicted_prices
+```
