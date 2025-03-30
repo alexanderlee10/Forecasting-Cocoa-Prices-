@@ -107,7 +107,6 @@ final_price <- final_price %>%
 # Ensure DATE column is already Date type (if not, convert)
 final_ghana <- final_ghana %>%
   mutate(DATE = as.Date(DATE))
-
 ```
 
 
@@ -137,12 +136,16 @@ sorted_data <- sorted_data %>%
     precipitation = PRCP,                               
     avg_temperature = TAVG                             
   )
-
+final_price <- final_price %>%
+  rename(
+    date = Date,
+    daily_price = `Price`
+  )
 ```
 
 ```{r}
 # only keep date and daily_price
-univariate_data <- sorted_data %>%
+univariate_data <- final_price %>%
   select(date, daily_price)
 head(univariate_data)
 
@@ -170,13 +173,6 @@ missing_months <- monthly_avg %>%
   complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
   filter(is.na(avg_price))
 
-# use linear interpolation to fill in missing values
-monthly_avg <- monthly_avg %>%
-  complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
-  fill(avg_price) %>%
-  arrange(year_month)
-
-monthly_avg
 ```
 ```{r}
 # keep train data as dates 2023 and before
@@ -291,7 +287,7 @@ print(mape_garch_10_scaled)
 print(mape_garch_11_scaled)
 print(mape_garch_20_scaled)
 print(mape_garch_12_scaled)
-
+forecasted_values_scaled
 ```
 
 
