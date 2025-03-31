@@ -126,98 +126,200 @@ final_price <- clean_price[, c("Date", "Price")]
 ```
 
 
+
+
+
 ```{r}
 final_price <- final_price %>%
   mutate(Date = as.Date(Date, format = "%d/%m/%Y"))
 
+final_price
+
+```
+
+
+```{r}
 # Ensure DATE column is already Date type (if not, convert)
 final_ghana <- final_ghana %>%
-  mutate(DATE = as.Date(DATE))
+  mutate(Date = as.Date(DATE))
 
+final_ghana
 ```
 
 
 
-```{r}
-combined_data <- final_price %>%
-  inner_join(final_ghana, by = c("Date" = "DATE"))
 
-combined_data
-```
 
 ```{r}
-sorted_data <- combined_data %>%
-  mutate(Date = ymd(Date)) %>%       # Convert to proper date format
-  arrange(Date)
-
-# View sorted data
-sorted_data
-
-```
-```{r}
-sorted_data <- sorted_data %>%
+final_price <- final_price %>%
   rename(
     date = Date,
-    daily_price = `Price`,  
-    precipitation = PRCP,                               
-    avg_temperature = TAVG                             
+    daily_price = `Price`
   )
+final_price
+```
+
+```{r}
+# from univariate data, check if there are misisng dates
+missing_dates <- final_price %>%
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>%
+  filter(is.na(daily_price))
+
+length(missing_dates$date)
+```
+
+```{r}
+# take the monthly average
+monthly_avg_price <- final_price %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(avg_price = mean(daily_price, na.rm = TRUE))
+
+monthly_avg_price
+tail(monthly_avg_price)
+```
+
+```{r}
+# select only the date and temperature from final_ghana
+final_temp <- final_ghana[, c("Date", "TAVG")]
+final_temp
+```
+```{r}
+monthly_avg_temp <- final_temp %>%
+  mutate(year_month = format(Date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(avg_temp = mean(TAVG, na.rm = TRUE))
+
+monthly_avg_temp
+tail(monthly_avg_temp)
+```
+
+
+```{r}
+monthly_avg_temp <- monthly_avg_temp %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+# Step 2: Create a complete sequence of months
+full_months <- data.frame(
+  year_month = seq(min(monthly_avg_temp$year_month),
+                   max(monthly_avg_temp$year_month),
+                   by = "month")
+)
+
+# Step 3: Left join with the original data to insert NAs where data is missing
+full_data <- full_months %>%
+  left_join(monthly_avg_temp, by = "year_month")
+
+# Step 4: Interpolate missing values
+full_data <- full_data %>%
+  mutate(avg_temp = na.approx(avg_temp, na.rm = FALSE))
+
+# Step 5: Convert date back to "YYYY-MM" if needed
+full_data <- full_data %>%
+  mutate(year_month = format(year_month, "%Y-%m"))
+monthly_avg_temp <- full_data
+monthly_avg_temp
+```
+
+
+
+
+```{r}
+final_precipitation <- final_ghana[, c("Date", "PRCP")]
+final_precipitation
+```
+
+```{r}
+final_precipitation <- final_precipitation %>%
+  mutate(precipitation_binary = if_else(is.na(PRCP), 0, 1))
+final_precipitation <- final_precipitation[, c("Date", "precipitation_binary")]
+```
+```{r}
+final_precipitation
+```
+
+
+
+
+```{r}
+monthly_avg_precipitation <- final_precipitation %>%
+  mutate(year_month = format(Date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(precipitation_days = sum(precipitation_binary, na.rm = TRUE))
+monthly_avg_precipitation
 
 ```
 
 ```{r}
+monthly_avg_precipitation <- monthly_avg_precipitation %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+# Step 2: Create complete sequence of months
+full_months <- data.frame(
+  year_month = seq(min(monthly_avg_precipitation$year_month),
+                   max(monthly_avg_precipitation$year_month),
+                   by = "month")
+)
+
+# Step 3: Left join and fill missing precipitation_days with 0
+full_precip_data <- full_months %>%
+  left_join(monthly_avg_precipitation, by = "year_month") %>%
+  mutate(precipitation_days = ifelse(is.na(precipitation_days), 0, precipitation_days))
+
+# Step 4: Convert year_month back to "YYYY-MM"
+full_precip_data <- full_precip_data %>%
+  mutate(year_month = format(year_month, "%Y-%m"))
+monthly_avg_precipitation <- full_precip_data
+monthly_avg_precipitation
+```
+
+```{r}
+monthly_avg_price <- monthly_avg_price %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+monthly_avg_temp <- monthly_avg_temp %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+monthly_avg_precipitation <- monthly_avg_precipitation %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+```
+
+
+```{r}
+combined_data <- monthly_avg_price %>%
+  inner_join(monthly_avg_temp, by = "year_month") %>%
+  inner_join(monthly_avg_precipitation, by = "year_month")
+sorted_data <- combined_data
 sorted_data
 ```
 
-```{r}
-sorted_data <- sorted_data %>%
-  mutate(precipitation_binary = if_else(is.na(precipitation), 0, 1))
-
-sorted_data
-
-```
 
 ```{r}
-sorted_data <- sorted_data[, c("date", "daily_price", "precipitation_binary", "avg_temperature")]
-```
-
-```{r}
-sorted_data <- sorted_data %>%
-  rename(
-    precipitation = precipitation_binary
-  )
-sorted_data
-```
-
-
-
-```{r}
-var_df <- sorted_data 
+var_df <- sorted_data
 var_df
 ```
 
-
 ```{r}
-adf.test(var_df$precipitation)
-adf.test(var_df$daily_price)
-adf.test(var_df$avg_temperature)
+#Check for stationary
+adf.test(var_df$precipitation_days)
+adf.test(var_df$avg_price)
+adf.test(var_df$avg_temp)
 ```
 
 ```{r}
+# Making it stationary 
 var_df <- var_df %>%
-  mutate(diff_log_price = c(NA, diff(log(daily_price))))
+  mutate(diff_log_price = c(NA, diff(log(avg_price))))
 var_df
 ```
 
 ```{r}
-# get rid of 1994-10-03 row
+# Get rid of the year with 1994-10-01
 var_df <- var_df %>%
-  filter(date != ymd("1994-10-03"))
-
-tail(var_df) 
-
-
+  filter(year_month != "1994-10-01")
+var_df
 ```
+
 ```{r}
 # fidn everything in diff_log_prie that is NA
 na_rows <- var_df %>%
@@ -226,60 +328,174 @@ na_rows
 ```
 
 
-
 ```{r}
-adf.test(var_df$precipitation)
+adf.test(var_df$precipitation_days)
 adf.test(var_df$diff_log_price)
-adf.test(var_df$avg_temperature)
+adf.test(var_df$avg_temp)
 ```
 # All stationary from Above 
 
 
 
+```{r}
+# keep train data as dates 2023 and before
+train_data <- var_df %>%
+  filter(year_month < ym("2024-01"))
+train_data
+```
+
+
+```{r}
+test_data <- var_df %>%
+  filter(year_month >= ym("2023-12"))
+test_data
+```
 
 ```{r}
 # now do it into the data frame 
-var_data <- var_df[, c("diff_log_price", "precipitation", "avg_temperature")]
-var_data
+train_data <- train_data[, c("diff_log_price", "precipitation_days", "avg_temp")]
+train_data
+```
+```{r}
+test_data <- test_data[, c("year_month", "avg_price")]
+test_data
 ```
 
+
 ```{r}
-lag_selection <- VARselect(var_data, 
-                           lag.max = 10, 
+lag_selection <- VARselect(train_data, 
+                           lag.max = 12, 
                            type = "both"
                            )
 print(lag_selection)
+lag_selection$selection
 ```
+# From the AIC we see that the best lag is 12
+# lag_selection$selection
 
 ```{r}
-# Suppose you pick p=3
-p_chosen <- 3
+# Suppose you pick p=12 based on the AIC
+p_chosen <- 12
 ```
 
 
 
 ```{r}
 # 6. Fit the VAR
-var_model <- VAR(var_data, p = p_chosen, type = "both")
+var_model <- VAR(train_data, p = 12, type = "both")
+var_model
 summary(var_model)
 ```
 
 ```{r}
-#I want to plot starting from 6600 days
-forecast <- predict(var_model)
+var_forecast <- predict(var_model, n.ahead = 11)
+var_forecast
+```
+
+
+```{r}
+log_price_forecast <- data.frame(fcst = var_forecast$fcst$diff_log_price[, "fcst"])
+
+# View the result
+print(log_price_forecast)
 ```
 
 ```{r}
-forecasted_log_diff_price <- forecast$fcst$diff_log_price[,1]
-#undiiference the forecasted log price
-forecasted_log_price <- cumsum(c(log(sorted_data$daily_price[6600])) + forecasted_log_diff_price)
-forecasted_price <- exp(forecasted_log_price)
-
-forecasted_price <- as.numeric(forecasted_price)
-forecasted_price
-# plot the forecasted price
-plot(forecasted_price, type = "l", col = "blue", xlab = "Days", ylab = "Price", main = "Forecasted Price")
+test_ts <- ts(test_data$avg_price, frequency = 12, start = c(2023, 12))
+test_ts
 ```
+
+```{r}
+forecasted_price <- exp(log_price_forecast + log(test_ts[1]))
+forecasted_price
+```
+
+
+```{r}
+forecast_months <- seq(from = as.Date("2024-01-01"), by = "month", length.out = 11)
+
+# Actual values for those forecasted months (from your test_ts)
+actual_price <- as.numeric(window(test_ts, start = c(2024, 1), end = c(2024, 11)))
+
+# Combine into a single data frame
+comparison_df <- data.frame(
+  Month = forecast_months,
+  Actual = actual_price,
+  Forecast = forecasted_price$fcst
+)
+```
+
+
+```{r}
+ggplot(comparison_df, aes(x = Month)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Forecast, color = "Forecasted")) +
+  labs(
+    title = "Actual vs Forecasted Prices",
+    x = "Month",
+    y = "Price",
+    color = "Legend"
+  ) +
+  scale_color_manual(values = c("Actual" = "blue", "Forecasted" = "red")) +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+forecast_diff_log_price <- forecast$fcst$diff_log_price[, "fcst"]
+
+# 2. Get the last actual log(price)
+last_actual_price <- tail(var_df$avg_price[!is.na(var_df$diff_log_price)], 1)
+last_actual_price
+last_log_price <- log(last_actual_price)
+
+# 3. Reconstruct future log prices
+future_log_prices <- cumsum(c(last_log_price, forecast_diff_log_price))
+
+# 4. Convert log prices back to actual prices
+future_prices <- exp(future_log_prices[-1])  # Remove the initial known price
+
+# 5. Create forecasted date sequence
+future_dates <- seq(max(var_df$year_month) + months(1), by = "month", length.out = length(future_prices))
+
+# 6. Build the forecast dataframe
+forecast_df <- data.frame(
+  year_month = future_dates,
+  forecasted_price = future_prices
+)
+
+forecast_df
+
+```
+
+```{r}
+ggplot(forecast_df, aes(x = year_month, y = forecasted_price)) +
+  geom_line(color = "blue") +
+  labs(title = "Forecasted Average Prices",
+       x = "Date",
+       y = "Forecasted Price")
+```
+
+
+
+
+
 
 ```{r}
 # from prices_data, get the actual price from 29/11/2024 to 9/12/2024
@@ -294,13 +510,30 @@ filtered_prices <- prices_data[prices_data$Date >= as.Date("29/11/2024", "%d/%m/
 filtered_prices
 ```
 
-```{r}
-clean_price <- prices_data %>%
-  distinct() %>%
-  filter(!(Date >= "30/01/2024" & `Price` == 10676.42)) %>%
-  filter(!(Date == "31/01/2024" & `Price` == 10888.05))
 
-plot(forecast)
+
+```{r}
+serial_test <- serial.test(var_model, lags.pt = 12, type = "PT.asymptotic")
+serial_test
+stability(var_model)
+plot(stability(var_model))
+```
+
+
+
+
+```{r}
+# 8. Forecast h steps ahead (e.g. h=30 days)
+fc <- predict(var_model, n.ahead = 30)
+
+# Look at log_price forecast
+print(fc$fcst$log_price)
+
+# Invert the log transform for actual price predictions
+level_price_point_forecast <- exp(fc$fcst$log_price[, "fcst"])
+
+# 9. Visualize log_price forecasts with a fan chart
+fanchart(fc, names = "log_price")
 
 ```
 
@@ -310,14 +543,34 @@ plot(forecast)
 
 
 
+
 ```{r}
-var_train <- var_data[1:6600, ]
+var_train <- var_data[6600:1]
 
 # Refit VAR model on just those 6600 observations
 var_model_cut <- VAR(var_train, p = 5, type = "const")
 
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ```{r}
