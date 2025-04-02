@@ -1,0 +1,1184 @@
+---
+title: "jae_work"
+output: html_document
+date: "2025-03-27"
+---
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(lubridate)
+library(dplyr)
+library(astsa)
+library(fGarch)
+library(xts)
+library(rugarch)
+library(tseries)
+library(vars)   
+
+# Delete if removing DL
+library(nnfor)
+```
+
+```{r} 
+# load data
+prices_data <- read_csv("DailyPrices_ICCO.csv", show_col_types=TRUE)
+ghana_data <- read_csv("Ghana_data.csv", show_col_types=TRUE)
+```
+
+# Data Preprocessing
+
+```{r}
+# Find rows with duplicated dates
+duplicate_dates <- prices_data %>%
+  group_by(Date) %>%        # Group by the "Date" column
+  filter(n() > 1) %>%       # Keep dates that appear more than once
+  arrange(Date) %>%         # Sort by date for clarity
+  ungroup()
+# View the results
+print(duplicate_dates)
+```
+
+```{r}
+# Modify the column name from ICCO daily price (US$/tonne) to Price
+prices_data <- rename(
+  prices_data, 
+  Price=`ICCO daily price (US$/tonne)`
+)
+# View the results
+print(prices_data)
+```
+
+The reason we do this is to show that the duuplicates data 30/01/2024 and 31/01/2024 are likely errors and we can remove them 
+```{r}
+result <- prices_data %>%
+  mutate(Date = dmy(Date)) %>%     # Parse dates
+  arrange(Date) %>%                # Sort by date
+  mutate(
+    next_price = lead(Price),
+    next_date = lead(Date),
+    days_diff = as.numeric(next_date - Date),
+    price_diff = next_price - Price
+  ) %>%
+  filter(
+    days_diff == 1,               
+    price_diff > 600,              # Price jump > $600
+    !is.na(price_diff)             
+  ) %>%
+  dplyr::select(                   # Explicitly use dplyr's select
+    Date, 
+    Price, 
+    next_date, 
+    next_price, 
+    price_diff
+  )
+
+# View the result
+print(result)
+```
+
+We can get rid of the duplicate dates 
+```{r}
+# get rid of the duplicate dates
+clean_price <- prices_data %>%
+  distinct() %>%
+  filter(!(Date == "30/01/2024" & `Price` == 10676.42)) %>%
+  filter(!(Date == "31/01/2024" & `Price` == 10888.05))
+```
+
+```{r}
+final_price <- clean_price[, c("Date", "Price")]
+final_price <- final_price %>%
+  rename(
+    date = Date,
+    daily_price = `Price`
+  )
+final_price
+
+```
+
+
+
+```{r}
+clean_ghana <- ghana_data %>%
+  mutate(DATE = ymd(DATE)) %>%
+  distinct(DATE, .keep_all = TRUE) %>%
+  filter(between(DATE, ymd("1994-10-03"), ymd("2024-11-28"))) %>%
+  arrange(DATE)
+clean_ghana
+```
+
+
+```{r}
+total_duplicates <- sum(duplicated(clean_ghana))
+total_duplicates
+```
+
+
+```{r}
+# select the columns we need (DATE, PRCP, TAVG)
+final_ghana <- clean_ghana[, c("DATE", "PRCP", "TAVG")]
+final_ghana
+```
+
+
+
+
+
+```{r}
+final_price <- final_price %>%
+  mutate(date = as.Date(date, format = "%d/%m/%Y"))
+# Ensure DATE column is already Date type (if not, convert)
+final_ghana <- final_ghana %>%
+  mutate(DATE = as.Date(DATE))
+final_ghana
+final_price
+```
+
+
+```{r}
+# take the monthly average
+monthly_avg_price <- final_price %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(avg_price = mean(daily_price, na.rm = TRUE))
+
+monthly_avg_price
+```
+
+```{r}
+# select only the date and temperature from final_ghana
+final_temp <- final_ghana[, c("DATE", "TAVG")]
+final_temp
+```
+```{r}
+monthly_avg_temp <- final_temp %>%
+  mutate(year_month = format(DATE, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(avg_temp = mean(TAVG, na.rm = TRUE))
+
+monthly_avg_temp
+tail(monthly_avg_temp)
+```
+
+
+```{r}
+monthly_avg_temp <- monthly_avg_temp %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+# Step 2: Create a complete sequence of months
+full_months <- data.frame(
+  year_month = seq(min(monthly_avg_temp$year_month),
+                   max(monthly_avg_temp$year_month),
+                   by = "month")
+)
+
+# Step 3: Left join with the original data to insert NAs where data is missing
+full_data <- full_months %>%
+  left_join(monthly_avg_temp, by = "year_month")
+
+# Step 4: Interpolate missing values
+full_data <- full_data %>%
+  mutate(avg_temp = na.approx(avg_temp, na.rm = FALSE))
+
+# Step 5: Convert date back to "YYYY-MM" if needed
+full_data <- full_data %>%
+  mutate(year_month = format(year_month, "%Y-%m"))
+monthly_avg_temp <- full_data
+monthly_avg_temp
+```
+
+
+```{r}
+final_precipitation <- final_ghana[, c("DATE", "PRCP")]
+final_precipitation
+```
+```{r}
+final_precipitation <- final_precipitation %>%
+  mutate(precipitation_binary = if_else(is.na(PRCP), 0, 1))
+final_precipitation <- final_precipitation[, c("DATE", "precipitation_binary")]
+```
+
+```{r}
+monthly_avg_precipitation <- final_precipitation %>%
+  mutate(year_month = format(DATE, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(precipitation_days = sum(precipitation_binary, na.rm = TRUE))
+monthly_avg_precipitation
+
+```
+
+```{r}
+monthly_avg_precipitation <- monthly_avg_precipitation %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+# Step 2: Create complete sequence of months
+full_months <- data.frame(
+  year_month = seq(min(monthly_avg_precipitation$year_month),
+                   max(monthly_avg_precipitation$year_month),
+                   by = "month")
+)
+
+# Step 3: Left join and fill missing precipitation_days with 0
+full_precip_data <- full_months %>%
+  left_join(monthly_avg_precipitation, by = "year_month") %>%
+  mutate(precipitation_days = ifelse(is.na(precipitation_days), 0, precipitation_days))
+
+# Step 4: Convert year_month back to "YYYY-MM"
+full_precip_data <- full_precip_data %>%
+  mutate(year_month = format(year_month, "%Y-%m"))
+monthly_avg_precipitation <- full_precip_data
+monthly_avg_precipitation
+```
+
+```{r}
+monthly_avg_price <- monthly_avg_price %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+monthly_avg_temp <- monthly_avg_temp %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+
+monthly_avg_precipitation <- monthly_avg_precipitation %>%
+  mutate(year_month = as.Date(paste0(year_month, "-01")))
+```
+
+```{r}
+combined_data <- monthly_avg_price %>%
+  inner_join(monthly_avg_temp, by = "year_month") %>%
+  inner_join(monthly_avg_precipitation, by = "year_month")
+sorted_data <- combined_data
+sorted_data
+```
+
+
+```{r}
+# only keep date and daily_price
+univariate_data <- final_price[, c("date", "daily_price")]
+```
+
+```{r}
+# from univariate data, check if there are misisng dates
+missing_dates <- univariate_data %>%
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>%
+  filter(is.na(daily_price))
+
+length(missing_dates$date)
+```
+
+
+```{r}
+# take the monthly average
+monthly_avg <- univariate_data %>%
+  mutate(year_month = format(date, "%Y-%m")) %>%
+  group_by(year_month) %>%
+  summarise(avg_price = mean(daily_price, na.rm = TRUE))
+
+monthly_avg$year_month <- ym(monthly_avg$year_month)
+
+
+# make monthly_avg date type
+# check if there are missing months
+missing_months <- monthly_avg %>%
+  complete(year_month = seq.Date(min(year_month), max(year_month), by = "month")) %>%
+  filter(is.na(avg_price))
+
+```
+
+
+
+
+# Univariate Time Series Analysis
+```{r}
+# keep train data as dates 2023 and before
+uni_train_data <- monthly_avg_price %>%
+  filter(year_month < ym("2024-01"))
+
+uni_test_data <- monthly_avg_price %>%
+  filter(year_month >= ym("2023-12"))
+```
+
+
+```{r}
+univariate_ts <- ts(uni_train_data$avg_price, frequency = 12, start = c(1994, 10))
+```
+
+```{r}
+univariate_ts
+```
+
+
+```{r}
+# check ACF and PACF
+xt = diff(log(univariate_ts))
+# xt = log(yt) - log(yt-1)
+plot(xt)
+```
+
+```{r}
+acf2(xt)
+
+model_AR1 = sarima(xt, 1, 0, 0)
+model_MA1 = sarima(xt, 0, 0, 1)
+sresxt = resid(model_AR1$fit)
+
+res_sq = sresxt^2 #Squared residuals
+acf2(res_sq, max.lag = 50) #It shows that there are some dependencies among residuals
+```
+
+```{r}
+garch_model_10 = garchFit(~arma(0,1)+garch(1,0), xt, cond.dist='std')
+garch_model_11 = garchFit(~arma(0,1)+garch(1,1), xt, cond.dist='std')
+garch_model_20 = garchFit(~arma(0,1)+garch(2,0), xt, cond.dist='std')
+garch_model_12 = garchFit(~arma(0,1)+garch(1,2), xt, cond.dist='std')
+```
+
+
+```{r}
+# Forecasting
+# compare with test data
+test_ts <- ts(uni_test_data$avg_price, frequency = 12, start = c(2023, 12))
+garch_model_10_forecast <- predict(garch_model_10, n.ahead = 11)
+garch_model_11_forecast <- predict(garch_model_11, n.ahead = 11)
+garch_model_20_forecast <- predict(garch_model_20, n.ahead = 11)
+garch_model_12_forecast <- predict(garch_model_12, n.ahead = 11)
+test_price <- diff(log(test_ts))
+test_price <- test_price[1:11]
+```
+
+```{r}
+#make a dataframe for the forecasted values
+forecasted_values <- data.frame(
+  garch_model_10_forecast$meanForecast,
+  garch_model_11_forecast$meanForecast,
+  garch_model_20_forecast$meanForecast,
+  garch_model_12_forecast$meanForecast,
+  test_price
+)
+# find mape for each model
+mape_garch_10 <- sum(abs((forecasted_values$garch_model_10_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+mape_garch_11 <- sum(abs((forecasted_values$garch_model_11_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+mape_garch_20 <- sum(abs((forecasted_values$garch_model_20_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+mape_garch_12 <- sum(abs((forecasted_values$garch_model_12_forecast - forecasted_values$test_price)/forecasted_values$test_price))/11
+
+#print each mape
+print(mape_garch_10)
+print(mape_garch_11)
+print(mape_garch_20)
+print(mape_garch_12)
+```
+
+# TATSUYA HERE IS THE UNIVVARIATE FORECASTED PRICE
+```{r}
+# now revert back to the original scale
+# xt = diff(log(univariate_ts))
+# xt = log(yt) - log(yt-1)
+# log(yt) = xt + log(yt-1)
+# yt = exp(xt + log(yt-1))
+
+forecased_price_scaled_10 = exp(forecasted_values$garch_model_10_forecast + log(test_ts[1]))
+forecased_price_scaled_11 = exp(forecasted_values$garch_model_11_forecast + log(test_ts[1]))
+forecased_price_scaled_20 = exp(forecasted_values$garch_model_20_forecast + log(test_ts[1]))
+forecased_price_scaled_12 = exp(forecasted_values$garch_model_12_forecast + log(test_ts[1]))
+
+length(test_ts[1:11])
+# make a dataframe for the forecasted values
+forecasted_values_scaled <- data.frame(
+  forecased_price_scaled_10,
+  forecased_price_scaled_11,
+  forecased_price_scaled_20,
+  forecased_price_scaled_12,
+  test_ts[1:11]
+)
+
+# find mape for each model
+mape_garch_10_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_10 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+mape_garch_11_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_11 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+mape_garch_20_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_20 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+mape_garch_12_scaled <- sum(abs((forecasted_values_scaled$forecased_price_scaled_12 - forecasted_values_scaled$test_ts)/forecasted_values_scaled$test_ts))/11
+
+#print each mape
+print(mape_garch_10_scaled)
+print(mape_garch_11_scaled)
+print(mape_garch_20_scaled)
+print(mape_garch_12_scaled)
+forecasted_values_scaled
+```
+
+
+# VAR Model
+```{r}
+var_df <- sorted_data
+var_df
+```
+
+```{r}
+#Check for stationary
+adf.test(var_df$precipitation_days)
+adf.test(var_df$avg_price)
+adf.test(var_df$avg_temp)
+```
+
+
+```{r}
+# Making it stationary 
+var_df <- var_df %>%
+  mutate(diff_log_price = c(NA, diff(log(avg_price))))
+var_df
+```
+
+
+```{r}
+# Get rid of the year with 1994-10-01
+var_df <- var_df %>%
+  filter(year_month != "1994-10-01")
+var_df
+```
+
+```{r}
+# fidn everything in diff_log_prie that is NA
+na_rows <- var_df %>%
+  filter(is.na(diff_log_price))
+na_rows
+```
+
+
+```{r}
+# keep train data as dates 2023 and before
+var_train_data <- var_df %>%
+  filter(year_month < ym("2024-01"))
+var_train_data
+```
+
+```{r}
+var_test_data <- var_df %>%
+  filter(year_month >= ym("2023-12"))
+var_test_data
+```
+```{r}
+# now do it into the data frame 
+var_train_data <- var_train_data[, c("diff_log_price", "precipitation_days", "avg_temp")]
+var_train_data
+```
+
+```{r}
+# we chose lag.max 12 since it is monhtly data
+lag_selection <- VARselect(var_train_data, 
+                           lag.max = 12, 
+                           type = "both"
+                           )
+print(lag_selection)
+lag_selection$selection
+```
+```{r}
+# Suppose you pick p=12 based on the AIC
+p_chosen <- 12
+```
+
+```{r}
+# Fit the VAR
+var_model <- VAR(var_train_data, p = p_chosen, type = "both")
+summary(var_model)
+```
+
+```{r}
+var_forecast <- predict(var_model, n.ahead = 11)
+plot(var_forecast)
+var_forecast
+```
+
+
+```{r}
+log_price_forecast <- data.frame(fcst = var_forecast$fcst$diff_log_price[, "fcst"])
+print(log_price_forecast)
+```
+
+```{r}
+test_ts <- ts(var_test_data$avg_price, frequency = 12, start = c(2024, 1))
+test_ts
+```
+# TATSUYA HERE IS THE VAR FORECASTED PRICE
+```{r}
+var_forecasted_price <- exp(log_price_forecast + log(test_ts[1]))
+var_forecasted_price["VAR"] = var_forecasted_price["fcst"]
+var_forecasted_price$fcst <- NULL
+var_forecasted_price
+```
+
+
+```{r}
+forecast_months <- seq(from = as.Date("2024-01-01"), by = "month", length.out = 11)
+
+# Actual values for those forecasted months (from your test_ts)
+actual_price <- as.numeric(window(test_ts, start = c(2024, 1), end = c(2024, 11)))
+
+# Combine into a single data frame
+comparison_df <- data.frame(
+  Month = forecast_months,
+  Actual = actual_price,
+  Forecast = var_forecasted_price$VAR
+)
+
+comparison_df
+```
+```{r}
+# FIND THE MAPE OF THE VAR MODEL
+data <- data.frame(
+  Actual = comparison_df$Actual,
+  Forecast = comparison_df$Forecast
+)
+
+data$Error <- abs((comparison_df$Actual - comparison_df$Forecast) / comparison_df$Actual)
+mape <- mean(data$Error)
+mape
+```
+
+
+
+```{r}
+ggplot(comparison_df, aes(x = Month)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Forecast, color = "Forecasted")) +
+  labs(
+    title = "Actual vs Forecasted Prices",
+    x = "Month",
+    y = "Price",
+    color = "Legend"
+  ) +
+  scale_color_manual(values = c("Actual" = "blue", "Forecasted" = "red")) +
+  theme_minimal()
+```
+
+# Tatsuya's work from here
+
+```{r}
+# Import Inflation and S&P GSCI
+inflation <- read.csv2(
+  "inflation.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE,
+)
+
+inflation <- inflation %>%
+  separate(
+    col  = "Date.Inflation.....",  
+    into = c("Date", "Inflation"),  
+    sep  = ","                      
+  )
+
+sp_gsci <- read.csv2(
+  "S&P.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+
+clean_inflation <- inflation %>%
+  rename(
+    date = "Date",
+    inflation = "Inflation"
+  ) %>%
+  mutate(date = ymd(date)) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  arrange(date)
+
+clean_sp <- sp_gsci %>%
+  rename(
+    date = "Issue.Date",
+    gsci      = "S.P.GSCI"
+  ) %>%
+  mutate(date = mdy(date)) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  arrange(date)
+```
+
+```{r}
+# Filter by dates
+filtered_inflation <- clean_inflation %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+filtered_sp <- clean_sp %>%
+  filter(
+    date >= "2015-02-27",
+    date <= "2024-11-28"
+  )
+
+monthly_avg_price <- monthly_avg_price %>%
+  filter(
+    year_month >= "2015-02-27",
+    year_month <= "2024-11-28"
+  )
+
+# Convert S&P GSCI from daily to monthly
+df_gsci_monthly <- filtered_sp %>%
+  mutate(month_start = floor_date(date, "month")) %>%
+  group_by(month_start) %>%
+  summarize(
+    monthly_gsci = mean(gsci, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  rename(date = month_start)
+```
+
+```{r}
+# S&P GSCI (red) vs Cocoa Price (blue)
+# 1) Plot the first series (red) with normal axes
+plot(
+  x    = df_gsci_monthly$date,
+  y    = df_gsci_monthly$monthly_gsci,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "S&P GSCI",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 2) Add the second series (blue) on top, with a new y-axis
+par(new = TRUE)  
+plot(
+  x    = monthly_avg_price$year_month,
+  y    = monthly_avg_price$avg_price,
+  type = "l",
+  col  = "blue",
+  axes = FALSE,         
+  xlab = "",            
+  ylab = "",           
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 3) Draw a new axis on the right side, and label it appropriately
+axis(side = 4)                # y-axis on the right
+mtext("Daily Price", side = 4, line = 3)  # label the new axis
+```
+
+```{r}
+# Inflation (red) vs Cocoa Price (blue)
+# 1) Plot the first series (red) with normal axes
+plot(
+  x    = filtered_inflation$date,
+  y    = filtered_inflation$inflation,
+  type = "l",
+  col  = "red",
+  xlab = "Date",
+  ylab = "Inflation",
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 2) Add the second series (blue) on top, with a new y-axis
+par(new = TRUE) 
+plot(
+  x    = monthly_avg_price$year_month,
+  y    = monthly_avg_price$avg_price,
+  type = "l",
+  col  = "blue",
+  axes = FALSE,   
+  xlab = "",        
+  ylab = "",     
+  xlim = c(as.Date("2015-02-27"), as.Date("2024-11-28"))
+)
+
+# 3) Draw a new axis on the right side, and label it appropriately
+axis(side = 4)                # y-axis on the right
+mtext("Daily Price", side = 4, line = 3)  # label the new axis
+```
+
+## ARIMAX model
+```{r}
+# CCF Test
+# Create ts objects
+ts_inflation <- ts(as.numeric(filtered_inflation$inflation),
+                   frequency=12, start=c(2015,1))  
+ts_gsci <- ts(df_gsci_monthly$monthly_gsci,
+              frequency=12, start=c(2015,1))
+ts_cocoa<- ts(monthly_avg_price$avg_price,
+              frequency=12, start=c(2015,1))
+
+# Difference them
+diff_inflation <- as.numeric(diff(ts_inflation))
+diff_gsci <- as.numeric(diff(ts_gsci))
+diff_cocoa <- as.numeric(diff(ts_cocoa))
+
+# CCF: inflation - cocoa
+ccf_infl_cocoa <- ccf(diff_inflation, diff_cocoa,
+                      lag.max=36, plot=TRUE) # adjust lag.max
+
+# CCF: gsci - cocoa
+ccf_gsci_cocoa <- ccf(diff_gsci, diff_cocoa,
+                      lag.max=36, plot=TRUE)
+
+# This gives the lag of max correlation
+best_lag_infl <- ccf_infl_cocoa$lag[which.max(abs(ccf_infl_cocoa$acf))]
+cat("Best lag for inflation vs cocoa =", best_lag_infl, "months\n")
+best_lag_gsci <- ccf_gsci_cocoa$lag[which.max(abs(ccf_gsci_cocoa$acf))]
+cat("Best lag for gsci vs cocoa =", best_lag_gsci, "months\n")
+```
+
+```{r}
+# Shift 'date'
+filtered_inflation_shifted <- filtered_inflation %>%
+  mutate(date = date %m+% months(16))  # 16 months shift
+
+filtered_sp_shifted <- df_gsci_monthly %>%
+  mutate(date = date %m+% months(24))  # 24 months shift
+
+# Standardize the 'inflation' and 'gsci' columns so they have mean = 0 and sd = 1.
+filtered_inflation_shifted <- filtered_inflation_shifted %>%
+  mutate(inflation = scale(as.numeric(inflation)))
+
+filtered_sp_shifted <- filtered_sp_shifted %>%
+  mutate(gsci = scale(monthly_gsci))
+```
+
+```{r}
+# Split Data into Training/Testing
+cutoff_date <- as.Date("2024-01-01")
+
+monthly_avg_price <- monthly_avg_price %>%
+  rename(date = year_month)
+
+train_gsci <- df_gsci_monthly %>%
+  filter(date < cutoff_date)
+test_gsci <- df_gsci_monthly %>%
+  filter(date >= cutoff_date)
+
+train_prices <- monthly_avg_price %>%
+  filter(date < cutoff_date)
+test_prices <- monthly_avg_price %>%
+  filter(date >= cutoff_date)
+
+df_monthly_train <- train_prices %>%
+  left_join(filtered_inflation_shifted, by = "date") %>%
+  left_join(train_gsci, by = "date")
+
+df_monthly_test <- test_prices %>%
+  left_join(filtered_inflation_shifted, by = "date") %>%
+  left_join(test_gsci, by = "date")
+```
+
+```{r}
+# (1) Log-transform the price in TRAIN
+df_monthly_train <- train_prices %>%
+  inner_join(filtered_inflation_shifted, by = "date") %>%
+  inner_join(train_gsci, by = "date")
+
+df_monthly_train <- df_monthly_train %>%
+  mutate(log_price = log(avg_price))
+```
+
+```{r}
+# (2) Create the ts object using log-transformed prices
+start_year  <- year(df_monthly_train$date[1])
+start_month <- month(df_monthly_train$date[1])
+
+ts_price_log <- ts(
+  data = df_monthly_train$log_price,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+```
+
+```{r}
+# (3) Keep the external regressors (inflation, gsci_div2) as-is 
+ts_inflation <- ts(
+  data = df_monthly_train$inflation,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+ts_gsci <- ts(
+  data = df_monthly_train$monthly_gsci,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+```
+
+```{r}
+# (4) Plot ts_price_log and take difference to make it stationary if necessary
+plot(ts_price_log)
+
+diff_price_log <- diff(ts_price_log)
+plot(diff_price_log)
+```
+
+```{r}
+# (5) Take difference of inflation and GSCI to match the length with diff_price_log and plot ACF/PACF
+diff_inflation  <- diff(ts_inflation)
+diff_gsci       <- diff(ts_gsci)
+
+fit_exog <- lm(diff_price_log ~ diff_inflation + diff_gsci)
+resids <- residuals(fit_exog)
+acf(resids)
+pacf(resids)
+```
+
+```{r}
+# (6) Check ARIMA(0,1,2)/ARIMA(1,1,1) and compare their AIC
+# ARIMA(0,1,1)
+fit_011 <- Arima(ts_price_log, order = c(0,1,1),
+                 xreg  = cbind(ts_inflation, ts_gsci))
+# ARIMA(0,1,2)
+fit_012 <- Arima(ts_price_log, order = c(0,1,2),
+                 xreg  = cbind(ts_inflation, ts_gsci))
+# ARIMA(1,1,1)
+fit_111 <- Arima(ts_price_log, order = c(1,1,1),
+                 xreg  = cbind(ts_inflation, ts_gsci))
+
+# Compare AIC: Indeed ARIMA(1,1,0) is the best
+AIC(fit_011, fit_012, fit_111)
+```
+
+```{r}
+# (7) Use auto.arima() to check if ARIMA(0,1,1) is indeed the best
+fit_arima_log <- auto.arima(
+  y    = ts_price_log,
+  xreg = cbind(ts_inflation, ts_gsci),
+  stepwise      = FALSE,
+  approximation = FALSE
+)
+
+summary(fit_arima_log)
+```
+
+```{r}
+# (8) Repeat for TEST data
+df_monthly_test <- df_monthly_test %>%
+  mutate(log_price = log(avg_price))
+
+start_year_test  <- year(df_monthly_test$date[1])
+start_month_test <- month(df_monthly_test$date[1])
+
+ts_price_test_log <- ts(
+  data = df_monthly_test$log_price,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+ts_inflation_test <- ts(
+  data = df_monthly_test$inflation,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+ts_gsci_test <- ts(
+  data = df_monthly_test$monthly_gsci,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+xreg_test <- cbind(ts_inflation_test, ts_gsci_test)
+colnames(xreg_test) <- c("ts_inflation", "ts_gsci")
+```
+
+```{r}
+# (9) Forecast using the log-scale model
+forecast_log <- forecast(fit_arima_log, xreg = xreg_test)
+```
+
+```{r}
+# (10) Exponentiate the forecast to get back to original price scale
+predicted_prices_arimax <- exp(forecast_log$mean)
+```
+
+```{r}
+# (11) Evaluate errors
+# Training Data
+## Actual training prices
+train_actual_prices <- df_monthly_train$avg_price
+
+## Fitted log prices
+train_fitted_log <- fitted(fit_arima_log)
+
+## Convert to the original prices using exp()
+train_fitted_prices <- exp(train_fitted_log)
+
+# Training Data MSE
+mse_train <- mean((train_actual_prices - train_fitted_prices)^2, na.rm = TRUE)
+cat("Train MSE =", mse_train, "\n")
+
+# Training Data MAPE
+mape_train <- mean(abs(train_actual_prices - train_fitted_prices) / train_actual_prices, na.rm = TRUE) * 100
+cat("Train MAPE =", mape_train, "%\n")
+```
+
+```{r}
+# Testing Data
+## Actual testing prices
+test_actual_prices <- df_monthly_test$avg_price
+
+# Testing Data MSE
+mse_test <- mean((test_actual_prices - predicted_prices_arimax)^2, na.rm = TRUE)
+cat("Test MSE =", mse_test, "\n")
+
+# Testing Data MAPE
+mape_test <- mean(abs(test_actual_prices - predicted_prices_arimax) / test_actual_prices, na.rm = TRUE) * 100
+cat("Test MAPE =", mape_test, "%\n")
+```
+
+```{r}
+# Plot Actual vs. Predicted 
+# Create data frame
+plot_train <- df_monthly_train %>%
+  dplyr::select(date) %>%
+  mutate(
+    actual    = train_actual_prices,
+    predicted = train_fitted_prices,
+    dataset   = "Train"
+  )
+
+plot_test <- df_monthly_test %>%
+  dplyr::select(date) %>%
+  mutate(
+    actual    = test_actual_prices,
+    predicted = predicted_prices_arimax,
+    dataset   = "Test"
+  )
+
+# Connect Training/Testing using bind_rows() 
+plot_all <- bind_rows(plot_train, plot_test)
+
+ggplot(plot_all, aes(x = date)) +
+  geom_line(aes(y = actual,    color = "Actual")) +
+  geom_line(aes(y = predicted, color = "Predicted"), linetype = "dashed") +
+  facet_wrap(~ dataset, scales = "free_x", ncol = 1) +
+  labs(
+    title = "Actual vs. Predicted Cocoa Prices",
+    x     = "Date",
+    y     = "Price",
+    color = ""
+  ) +
+  theme_minimal()
+```
+
+## Deep Learning model
+```{r}
+# This set up is the same with the set up of ARIMAX 
+# but didn't shift months (DL will automatically shift)
+filtered_inflation <- filtered_inflation %>%
+  mutate(inflation = scale(as.numeric(inflation)))
+
+filtered_sp <- df_gsci_monthly %>%
+  mutate(gsci = scale(monthly_gsci))
+
+df_monthly_train <- train_prices %>%
+  left_join(filtered_inflation, by = "date") %>%
+  left_join(train_gsci, by = "date")
+
+df_monthly_test <- test_prices %>%
+  left_join(filtered_inflation, by = "date") %>%
+  left_join(test_gsci, by = "date")
+
+df_monthly_train <- train_prices %>%
+  inner_join(filtered_inflation, by = "date") %>%
+  inner_join(train_gsci, by = "date")
+
+df_monthly_train <- df_monthly_train %>%
+  mutate(log_price = log(avg_price))
+
+ts_price_log <- ts(
+  data = df_monthly_train$log_price,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+
+ts_inflation <- ts(
+  data = df_monthly_train$inflation,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+ts_gsci <- ts(
+  data = df_monthly_train$monthly_gsci,
+  start = c(start_year, start_month),
+  frequency = 12
+)
+
+df_monthly_test <- df_monthly_test %>%
+  mutate(log_price = log(avg_price)) 
+
+ts_price_test_log <- ts(
+  data = df_monthly_test$log_price,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+ts_inflation_test <- ts(
+  data = df_monthly_test$inflation,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+ts_gsci_test <- ts(
+  data = df_monthly_test$monthly_gsci,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+```
+
+```{r}
+# (1) Use a nonlinear model
+n <- length(ts_price_log)
+train_xreg <- cbind(ts_inflation[1:n], ts_gsci[1:n]) 
+colnames(train_xreg) <- c("ts_inflation","ts_gsci")
+
+fit_mlp <- mlp(
+  y = ts_price_log,
+  xreg = train_xreg,
+  hd = 3,       # hidden neuron
+  reps = 200     # number of repeats
+)
+
+# Predict 11 months forward
+h <- 11
+test_xreg <- cbind(ts_inflation_test[1:h], ts_gsci_test[1:h])
+colnames(test_xreg) <- c("ts_inflation","ts_gsci")
+xreg_all <- rbind(train_xreg, test_xreg[1:h, ])
+
+forecast_mlp <- forecast(
+  fit_mlp,
+  h = h,
+  xreg = xreg_all
+)
+
+summary(fit_mlp)
+summary(forecast_mlp)
+```
+
+```{r}
+# (2) Prediction using testing data
+df_monthly_test <- df_monthly_test %>%
+  mutate(
+    log_price = log(avg_price)
+  )
+
+ts_inflation_test <- ts(
+  data = df_monthly_test$inflation,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+ts_gsci_test <- ts(
+  data = df_monthly_test$monthly_gsci,
+  start = c(start_year_test, start_month_test),
+  frequency = 12
+)
+
+predicted_log    <- as.numeric(forecast_mlp$mean)
+predicted_prices_dl <- exp(predicted_log)
+```
+
+```{r}
+# (4) Evaluation for training data
+# Actual training prices
+train_actual_prices <- df_monthly_train$avg_price
+
+train_fitted_log <- fit_mlp$fitted         
+train_fitted_prices <- exp(train_fitted_log)  
+
+n_fit <- length(train_fitted_prices)
+train_actual_prices <- tail(train_actual_prices, n_fit)
+
+# MSE (train)
+mse_train <- mean((train_actual_prices - train_fitted_prices)^2, na.rm = TRUE)
+cat("Train MSE =", mse_train, "\n")
+
+# MAPE (train)
+mape_train <- mean(
+  abs(train_actual_prices - train_fitted_prices) / train_actual_prices,
+  na.rm = TRUE
+) * 100
+cat("Train MAPE =", mape_train, "%\n")
+```
+
+```{r}
+# (5) Evaluation for testing data
+# Actual test prices
+test_actual_prices <- df_monthly_test$avg_price
+
+# MSE (test)
+mse_test <- mean((test_actual_prices - predicted_prices_dl)^2, na.rm = TRUE)
+cat("Test MSE =", mse_test, "\n")
+# MAPE (test)
+mape_test <- mean(abs(test_actual_prices - predicted_prices_dl) / test_actual_prices,
+                  na.rm = TRUE) * 100
+cat("Test MAPE =", mape_test, "%\n")
+```
+
+```{r}
+# (6) Plot
+# Actual prices (train) vs. fitted values
+df_plot_train <- df_monthly_train %>%
+  slice((nrow(df_monthly_train)-length(train_fitted_prices)+1) : nrow(df_monthly_train)) %>%
+  mutate(
+    predicted_price = train_fitted_prices,
+    dataset = "Train"
+  )
+
+# Actual prices (test) vs. predicted values
+df_plot_test <- df_monthly_test %>%
+  dplyr::select(date, avg_price) %>%
+  mutate(
+    predicted_price = predicted_prices_dl,
+    dataset = "Test"
+  )
+
+df_plot_all <- bind_rows(df_plot_train, df_plot_test)
+
+ggplot(df_plot_all, aes(x = date)) +
+  geom_line(aes(y = avg_price, color = "Actual")) +
+  geom_line(aes(y = predicted_price, color = "Predicted"), linetype = "dashed") +
+  facet_wrap(~dataset, scales = "free_x", ncol = 1) +
+  labs(
+    title = "Actual vs. Predicted Cocoa Prices (nnetar)",
+    x = "Date", y = "Price"
+  ) +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+```
+
+```{r}
+# set up before plotting
+test_ts <- head(test_ts, 11)
+var_forecasted_price <- t(var_forecasted_price)
+
+#--------------------------------------------------
+# 1) Create a combined data frame
+#--------------------------------------------------
+# Suppose we have 11 points in the test set, so:
+n_points <- length(test_ts)
+
+df_plot <- data.frame(
+  Month      = 1:n_points,  # or actual dates if you have them
+  Actual     = test_ts,     # actual cocoa price
+  GARCH_11   = forecased_price_scaled_11,
+  VAR        = var_forecasted_price,
+  ARIMAX     = predicted_prices_arimax,
+  DL         = predicted_prices_dl
+)
+```
+
+```{r}
+mean_vector <- colMeans(df_plot[, paste0("VAR.", 1:11)], na.rm = TRUE)
+df_plot$VAR <- mean_vector
+```
+
+```{r}
+#--------------------------------------------------
+# 2) Pivot to long format
+#--------------------------------------------------
+df_plot_long <- df_plot %>%
+  pivot_longer(
+    cols = c("Actual","GARCH_11","VAR","ARIMAX","DL"),
+    names_to = "Model",
+    values_to = "Price"
+  )
+
+#--------------------------------------------------
+# 3) Plot all lines in one chart
+#--------------------------------------------------
+ggplot(df_plot_long, aes(x = Month, y = Price, color = Model)) +
+  geom_line() +
+  labs(
+    title = "Actual vs. Multiple Model Forecasts for Cocoa Price",
+    x     = "Test Period Index",
+    y     = "Price"
+  ) +
+  theme_minimal()
+```
