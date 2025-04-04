@@ -373,7 +373,6 @@ print(mape_garch_20)
 print(mape_garch_12)
 ```
 
-# TATSUYA HERE IS THE UNIVVARIATE FORECASTED PRICE
 ```{r}
 # now revert back to the original scale
 # xt = diff(log(univariate_ts))
@@ -538,7 +537,8 @@ print(log_price_forecast)
 test_ts <- ts(var_test_data$avg_price, frequency = 12, start = c(2024, 1))
 test_ts
 ```
-# TATSUYA HERE IS THE VAR FORECASTED PRICE
+
+
 ```{r}
 var_forecasted_price <- exp(log_price_forecast + log(test_ts[1]))
 var_forecasted_price["VAR"] = var_forecasted_price["fcst"]
@@ -592,8 +592,6 @@ ggplot(comparison_df, aes(x = Month)) +
   scale_color_manual(values = c("Actual" = "blue", "Forecasted" = "red")) +
   theme_minimal()
 ```
-
-# Tatsuya's work from here
 
 ```{r}
 # Import Inflation and S&P GSCI
@@ -757,7 +755,7 @@ legend(
 )
 ```
 
-## ARIMAX model
+# ARIMAX model
 ```{r}
 # CCF Test
 # Create ts objects
@@ -1022,7 +1020,7 @@ ggplot(plot_all, aes(x = date)) +
   theme_minimal()
 ```
 
-## Deep Learning model
+# Deep Learning model
 ```{r}
 # This set up is the same with the set up of ARIMAX 
 # but didn't shift months (DL will automatically shift)
